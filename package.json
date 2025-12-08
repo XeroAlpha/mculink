@@ -1,0 +1,62 @@
+{
+    "name": "mculink",
+    "version": "0.1.1",
+    "description": "Type-safe FFI compatible with ARMv6-M that allows MCU interoperation with computers via J-Link",
+    "type": "module",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "import": "./dist/index.js",
+            "types": "./dist/index.d.ts"
+        },
+        "./armv6-m": {
+            "import": "./dist/armv6-m.js",
+            "types": "./dist/armv6-m.d.ts"
+        }
+    },
+    "files": [
+        "dist/"
+    ],
+    "scripts": {
+        "clean": "rimraf ./dist ./doc",
+        "build": "tsc",
+        "lint": "biome check --write",
+        "watch": "tsc --watch --preserveWatchOutput",
+        "docs": "typedoc"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/XeroAlpha/mculink.git"
+    },
+    "keywords": [
+        "jlink",
+        "segger",
+        "mcu",
+        "embedded",
+        "arm",
+        "ffi",
+        "foreign-function-interface",
+        "cortex-m",
+        "microcontroller",
+        "debugging"
+    ],
+    "author": "ProjectXero",
+    "license": "MIT",
+    "bugs": {
+        "url": "https://github.com/XeroAlpha/mculink/issues"
+    },
+    "homepage": "https://github.com/XeroAlpha/mculink",
+    "dependencies": {
+        "koffi": "^2.14.1",
+        "node-elf-file": "^0.0.4",
+        "type-fest": "^5.3.0"
+    },
+    "devDependencies": {
+        "@biomejs/biome": "2.3.8",
+        "@types/node": "^24.10.1",
+        "rimraf": "^6.1.2",
+        "typedoc": "^0.28.15",
+        "typescript": "^5.9.3"
+    }
+}

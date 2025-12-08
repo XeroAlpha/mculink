@@ -1,0 +1,50 @@
+name: Deploy Documentations
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy-docs:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Use Node.js
+      uses: actions/setup-node@v5
+
+    - name: Checkout
+      uses: actions/checkout@v5
+
+    - name: Install and build
+      run: |
+        npm ci
+        npm run docs
+    
+    - name: Setup GitHub Pages
+      id: pages_setup
+      uses: actions/configure-pages@v4
+      continue-on-error: true
+
+    - name: Upload artifact to GitHub pages
+      if: ${{ steps.pages_setup.outcome == 'success' }}
+      uses: actions/upload-pages-artifact@v4
+      with:
+        path: ${{ github.workspace }}/doc
+
+    - name: Deploy to GitHub Pages
+      if: ${{ steps.pages_setup.outcome == 'success' }}
+      id: deployment
+      uses: actions/deploy-pages@v4

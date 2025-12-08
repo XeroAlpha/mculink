@@ -1,0 +1,21 @@
+{
+    "include": ["./src/**/*"],
+    "compilerOptions": {
+        "moduleResolution": "nodenext",
+        "module": "nodenext",
+        "target": "es2024",
+        "lib": ["esnext"],
+        "declaration": true,
+        "rootDir": "./src",
+        "outDir": "./dist",
+        "declarationDir": "./dist",
+        "allowJs": true,
+        "strict": true,
+        "noImplicitAny": true,
+        "strictNullChecks": true,
+        "strictFunctionTypes": true,
+        "strictBindCallApply": true,
+        "strictPropertyInitialization": true,
+        "verbatimModuleSyntax": true
+    }
+}

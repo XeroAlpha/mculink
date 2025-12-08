@@ -1,0 +1,7 @@
+{
+    "$schema": "https://typedoc.org/schema.json",
+    "entryPoints": ["./src/index.ts", "./src/armv6-m.ts"],
+    "out": "doc",
+    "highlightLanguages": ["typescript", "json", "javascript", "c", "console"],
+    "name": "MCULink"
+}
