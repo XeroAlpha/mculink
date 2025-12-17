@@ -4,7 +4,7 @@ import {
     makeArray,
     makeBuffer,
     makeCallConvention,
-    makeComplexCall,
+    makeCompositeCall,
     makeEnum,
     makeFlags,
     makeFunctionType,
@@ -186,4 +186,4 @@ export const armCall = makeCallConvention((ctx, address, _name, returnType, ...a
     };
 });
 
-export const armComplexCall = makeComplexCall(armCall, t.ref.out);
+export const armCompositeCall = makeCompositeCall(armCall, t.ref.out);

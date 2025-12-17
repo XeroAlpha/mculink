@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { setImmediate } from 'node:timers/promises';
-import { type InspectOptions, inspect } from 'node:util';
+import { type CustomInspectFunction, inspect } from 'node:util';
 import type { LiteralUnion, Promisable } from 'type-fest';
 import { alignedCeil, alignedFloor } from './binparse.js';
 import { analyzeELF } from './elf.js';
@@ -82,6 +82,11 @@ export interface MCUContext {
     callTimeout: number;
 }
 
+/**
+ * MCUTypeDef 接口标签。存储对应的 JavaScript 类型。
+ *
+ * 该符号只有类型信息，实际上该导出变量并不存在。
+ */
 export declare const typeTag: unique symbol;
 
 /**
@@ -106,7 +111,7 @@ export interface MCUTypeDef<T = unknown, N extends SymbolDefintions = EmptyKeyOb
     size: number;
 
     /**
-     * 类型对齐，`__alignof__(Type)`，单位为字节。
+     * 对齐方式，`__alignof__(Type)`，单位为字节。
      */
     align: number;
 
@@ -165,6 +170,10 @@ export interface MCUTypeDef<T = unknown, N extends SymbolDefintions = EmptyKeyOb
  */
 export type ToJsType<T extends MCUTypeDef> = T[typeof typeTag];
 
+/**
+ * 收窄类型定义。
+ * @param type 类型定义。
+ */
 export function narrowType<T extends MCUTypeDef>(type: T) {
     return {
         as<N extends ToJsType<T>>() {
@@ -173,10 +182,22 @@ export function narrowType<T extends MCUTypeDef>(type: T) {
     };
 }
 
+/**
+ * 符号定义。
+ */
 export type MCUSymbolDef<T extends MCUTypeDef = MCUTypeDef> = {
+    /**
+     * 类型定义。
+     */
     type: T;
+    /**
+     * 相对于父类型的地址偏移量。
+     */
     address: number;
 };
+/**
+ * 符号定义表。
+ */
 export type SymbolDefintions = Partial<Record<string | number, MCUSymbolDef>>;
 
 export type MCUTypeDefAccessors<T, N extends SymbolDefintions = EmptyKeyObject> = Partial<
@@ -271,12 +292,12 @@ export function mcuType<T, N extends SymbolDefintions = EmptyKeyObject>(
     }
     if (type.fromRegister === undefined) {
         type.fromRegister = () => {
-            throw new Error(`Invalid return type.`);
+            throw new Error(`Invalid return type ${type.name}.`);
         };
     }
     if (type.toRegister === undefined) {
         type.toRegister = () => {
-            throw new Error(`Invalid parameter type.`);
+            throw new Error(`Invalid parameter type ${type.name}.`);
         };
     }
     if (!accessors.lazilyAccess) {
@@ -369,6 +390,13 @@ export function serialize<T>(
     throw new Error(`Target is unknown.`);
 }
 
+/**
+ * 根据地址与类型生成属性描述符。
+ * @param ctx MCU 调用上下文。
+ * @param addr 内存地址。
+ * @param type 类型定义。
+ * @returns 属性描述符。
+ */
 export function createVariable(ctx: MCUContext, addr: number, type: MCUTypeDef): PropertyDescriptor {
     return {
         get: () => type.lazilyAccess(ctx, addr),
@@ -376,67 +404,124 @@ export function createVariable(ctx: MCUContext, addr: number, type: MCUTypeDef):
     };
 }
 
-type CustomInspect = (
-    depth: number,
-    inspectOptions: InspectOptions,
-    inspect: typeof import('node:util').inspect,
-) => string;
-type Inspectable<T = unknown> = T & {
-    [inspect.custom]?: CustomInspect;
-    [Symbol.toStringTag]?: string;
-};
+function defaultLazilyAccessorHandler<T>(ctx: MCUContext, address: number, type: MCUTypeDef<T>) {
+    return type.fromMemory(ctx, address);
+}
 
-export function createLazilyAccessProxy<T extends object>(
-    ctx: MCUContext,
-    type: MCUTypeDef<T>,
-    address: number,
-    target: T,
-    has: (target: T, key: string) => boolean,
-    get: (target: T, key: string) => unknown,
-    set: (target: T, key: string, value: unknown) => boolean,
+/**
+ * 创建懒访问器。懒访问器会在懒访问时通过指定的函数获取代理对象，添加类型与地址标记，并自动缓存。
+ * @param handler 获取代理对象的函数。
+ */
+export function createLazilyAccessor<T>(
+    handler: (ctx: MCUContext, address: number, type: MCUTypeDef<T>) => T = defaultLazilyAccessorHandler,
 ) {
-    const proxyTarget = target as Inspectable<LazilyAccessObjectOrValue<T>>;
-    Object.defineProperty(proxyTarget, NativeType, { value: type });
-    Object.defineProperty(proxyTarget, MemoryAddress, { value: address });
-    proxyTarget[inspect.custom] = (depth, inspectOptions, _inspect) => {
-        if (depth < 0) {
-            return `[Object ${type.name}]`;
+    const cache = new WeakMap<
+        MCUContext,
+        {
+            map: Map<number, WeakRef<LazilyAccessObjectOrValue<T & object>>>;
+            finalizationRegistry: FinalizationRegistry<number>;
         }
-        return _inspect(type.fromMemory(ctx, address), {
-            ...inspectOptions,
-            depth: inspectOptions.depth! - 1,
-        });
+    >();
+    return function (this: MCUTypeDef<T>, ctx: MCUContext, address: number) {
+        let cachedMap = cache.get(ctx);
+        if (!cachedMap) {
+            const map = new Map();
+            cachedMap = {
+                map,
+                finalizationRegistry: new FinalizationRegistry((key) => map.delete(key)),
+            };
+            cache.set(ctx, cachedMap);
+        }
+        const cachedObj = cachedMap.map.get(address)?.deref();
+        if (cachedObj !== undefined) {
+            return cachedObj;
+        }
+        const value = handler(ctx, address, this);
+        if ((typeof value === 'object' || typeof value === 'function') && value !== null) {
+            const lazilyAccessValue = markAsLazilyAccessObject(value, this, address) as LazilyAccessObjectOrValue<
+                T & object
+            >;
+            cachedMap.map.set(address, new WeakRef(lazilyAccessValue));
+            cachedMap.finalizationRegistry.register(lazilyAccessValue, address);
+            return lazilyAccessValue;
+        }
+        return value as LazilyAccessObjectOrValue<T>;
     };
-    proxyTarget[Symbol.toStringTag] = type.name;
-    return new Proxy<LazilyAccessObjectOrValue<T>>(proxyTarget, {
-        get(target, p) {
-            if (typeof p === 'string' && has(target, p)) {
-                return get(target, p);
-            }
-            return Reflect.get(target, p);
-        },
-        getOwnPropertyDescriptor(target, p) {
-            if (typeof p === 'string' && has(target, p)) {
-                return {
-                    configurable: false,
-                    enumerable: true,
-                    get: () => get(target, p),
-                    set: (value) => set(target, p, value),
-                };
-            }
-            return Reflect.getOwnPropertyDescriptor(target, p);
-        },
-        set(target, p, newValue) {
-            if (typeof p === 'string' && has(target, p)) {
-                return set(target, p, newValue);
-            }
-            return Reflect.set(target, p, newValue);
-        },
+}
+
+/**
+ * 创建懒访问器。懒访问器会在懒访问时基于操作处理器创建代理对象，添加类型与地址标记，并自动缓存。
+ * @param handlers 代理操作处理器。
+ */
+export function createLazilyProxyAccesser<T extends object>(handlers: {
+    baseObjectFactory(ctx: MCUContext, address: number): T;
+    has(p: string): boolean;
+    get(ctx: MCUContext, address: number, p: string): unknown;
+    set(ctx: MCUContext, address: number, p: string, newValue: unknown): boolean;
+}) {
+    return createLazilyAccessor<T>((ctx, address, type) => {
+        const baseObject = handlers.baseObjectFactory(ctx, address);
+        Object.defineProperty(baseObject, inspect.custom, {
+            value: ((depth, inspectOptions) => {
+                if (depth < 0) {
+                    return `[Object ${type.name}]`;
+                }
+                return inspect(type.fromMemory(ctx, address), {
+                    ...inspectOptions,
+                    depth: inspectOptions.depth! - 1,
+                });
+            }) as CustomInspectFunction,
+        });
+        Object.defineProperty(baseObject, Symbol.toStringTag, { value: type.name });
+        const proxy = new Proxy(baseObject, {
+            get(target, p) {
+                if (typeof p === 'string' && handlers.has(p)) {
+                    return handlers.get(ctx, address, p);
+                }
+                return Reflect.get(target, p);
+            },
+            getOwnPropertyDescriptor(target, p) {
+                if (typeof p === 'string' && handlers.has(p)) {
+                    return {
+                        configurable: false,
+                        enumerable: true,
+                        get: () => handlers.get(ctx, address, p),
+                        set: (value) => handlers.set(ctx, address, p, value),
+                    };
+                }
+                return Reflect.getOwnPropertyDescriptor(target, p);
+            },
+            set(target, p, newValue) {
+                if (typeof p === 'string' && handlers.has(p)) {
+                    return handlers.set(ctx, address, p, newValue);
+                }
+                return Reflect.set(target, p, newValue);
+            },
+        });
+        return proxy;
     });
 }
 
+/**
+ * 标记对象为代理对象。
+ * @param value 对象。
+ * @param type 类型定义。
+ * @param address 内存地址。
+ */
+export function markAsLazilyAccessObject<T>(value: T, type: MCUTypeDef<T>, address: number) {
+    if ((typeof value === 'object' || typeof value === 'function') && value !== null) {
+        Object.defineProperty(value, NativeType, { value: type });
+        Object.defineProperty(value, MemoryAddress, { value: address });
+    }
+    return value as LazilyAccessObjectOrValue<T>;
+}
+
+/**
+ * 判断对象是否为代理对象。
+ * @param value 对象。
+ */
 export function isLazilyAccessProxy<T>(value: T): value is LazilyAccessObject<T> {
-    if (typeof value === 'object' && value !== null) {
+    if ((typeof value === 'object' || typeof value === 'function') && value !== null) {
         return (
             (value as LazilyAccessObject<T>)[NativeType] !== undefined &&
             (value as LazilyAccessObject<T>)[MemoryAddress] !== undefined
@@ -445,6 +530,11 @@ export function isLazilyAccessProxy<T>(value: T): value is LazilyAccessObject<T>
     return false;
 }
 
+/**
+ * 将代理对象转换为原始对象。对转换后的对象的读写不会影响内存中的对象。
+ * @param ctx MCU 调用上下文。
+ * @param value 代理对象。
+ */
 export function makeSnapshot<T>(ctx: MCUContext, value: T) {
     if (isLazilyAccessProxy(value)) {
         const nativeType = value[NativeType];
@@ -457,8 +547,12 @@ export function makeSnapshot<T>(ctx: MCUContext, value: T) {
 }
 
 const peripheralTypeMap = new WeakMap<MCUTypeDef, MCUTypeDef>();
+/**
+ * 构造对应类型的外设类型。读写外设类型时，总会直接读写 MCU 内存，而非使用提前读取缓冲区。
+ * @param type 类型定义。
+ */
 export function makePeripheral<T extends MCUTypeDef>(type: T) {
-    let peripheralType = peripheralTypeMap.get(type);
+    let peripheralType = peripheralTypeMap.get(type) as T;
     if (peripheralType === undefined) {
         peripheralType = Object.create(type) as T;
         peripheralType.name = `_Peripheral_ ${type.name}`;
@@ -516,42 +610,39 @@ export function makeArray<T extends MCUTypeDef>(type: T, length: number) {
             }
             return offset + size;
         },
-        lazilyAccess(ctx, addr) {
-            return createLazilyAccessProxy<ToJsType<T>[]>(
-                ctx,
-                this,
-                addr,
-                new Array(length).fill(undefined),
-                (_, p) => {
-                    if (p === 'length') {
-                        return true;
-                    }
-                    const numP = Number(p);
-                    return !Number.isNaN(numP) && numP >= 0 && numP < length;
-                },
-                (_, p) => {
-                    if (p === 'length') {
-                        return length;
-                    }
-                    const numP = Number(p);
-                    return type.lazilyAccess(ctx, addr + itemSize * numP);
-                },
-                (_, p, newValue) => {
-                    if (p === 'length') {
-                        return false;
-                    }
-                    const numP = Number(p);
-                    type.toMemory(ctx, addr + itemSize * numP, newValue);
+        lazilyAccess: createLazilyProxyAccesser({
+            baseObjectFactory() {
+                return new Array(length).fill(undefined) as ToJsType<T>[];
+            },
+            has(p) {
+                if (p === 'length') {
                     return true;
-                },
-            );
-        },
+                }
+                const numP = Number(p);
+                return !Number.isNaN(numP) && numP >= 0 && numP < length;
+            },
+            get(ctx, address, p) {
+                if (p === 'length') {
+                    return length;
+                }
+                const numP = Number(p);
+                return type.lazilyAccess(ctx, address + itemSize * numP);
+            },
+            set(ctx, address, p, newValue) {
+                if (p === 'length') {
+                    return false;
+                }
+                const numP = Number(p);
+                type.toMemory(ctx, address + itemSize * numP, newValue);
+                return true;
+            },
+        }),
     });
     return arrayType;
 }
 
 /**
- * 构造缓冲区类型。
+ * 构造缓冲区类型。该类型不支持代理对象，修改完成后需要重新赋值。
  * @param size 缓冲区大小。
  */
 export function makeBuffer(size: number) {
@@ -572,15 +663,15 @@ export function makeBuffer(size: number) {
 }
 
 /**
- * 构造类型化数组类型。
+ * 构造类型化数组类型。该类型不支持代理对象，修改完成后需要重新赋值。
  * @param ctor 类型化数组的构造函数。
  * @param length 类型化数组的长度。
  */
 export function makeTypedArray<T extends { buffer: ArrayBuffer; byteLength: number; byteOffset: number }>(
-    ctor: { new (buffer: ArrayBuffer): T; BYTES_PER_ELEMENT: number },
+    ctor: { new (buffer: ArrayBuffer): T; BYTES_PER_ELEMENT?: number },
     length: number,
 ) {
-    const byteLength = length * ctor.BYTES_PER_ELEMENT;
+    const byteLength = length * (ctor.BYTES_PER_ELEMENT ?? 1);
     return mcuType(`_${ctor.name}_(${length})`, byteLength, {
         deserialize: (buffer, offset) => {
             const newBuffer = new ArrayBuffer(byteLength);
@@ -614,6 +705,7 @@ export function makeEnum<B extends MCUTypeDef, T extends { [key: string]: ToJsTy
     }
     return mcuType(name, baseType.size, {
         align: baseType.align,
+        symbols: baseType.symbols as B['symbols'],
         deserialize: (buffer, offset, ctx, addr) => {
             const baseValue = deserialize(ctx, baseType, buffer, offset, addr);
             const value = enumDefLookup.get(baseValue);
@@ -629,7 +721,6 @@ export function makeEnum<B extends MCUTypeDef, T extends { [key: string]: ToJsTy
             const baseValue = enumDef[value];
             return serialize(ctx, baseType, baseValue, buffer, offset, addr);
         },
-        symbols: baseType.symbols as B['symbols'],
     });
 }
 
@@ -648,6 +739,7 @@ export function makeFlags<B extends MCUTypeDef<number>, T extends { [key: string
     const zeroFlagValue = Object.fromEntries(flagDefEntries.map(([k]) => [k, false])) as { [K in keyof T]: boolean };
     return mcuType(name, baseType.size, {
         align: baseType.align,
+        symbols: baseType.symbols as B['symbols'],
         deserialize: (buffer, offset, ctx, addr) => {
             const baseValue = deserialize(ctx, baseType, buffer, offset, addr);
             const value = { ...zeroFlagValue };
@@ -665,33 +757,30 @@ export function makeFlags<B extends MCUTypeDef<number>, T extends { [key: string
             }
             return serialize(ctx, baseType, baseValue, buffer, offset, addr);
         },
-        lazilyAccess(ctx, addr) {
-            const obj = { ...zeroFlagValue };
-            return createLazilyAccessProxy(
-                ctx,
-                this,
-                addr,
-                obj,
-                (_, p) => p in flagDef,
-                (_, p) => {
-                    const flag = flagDef[p];
-                    const baseValue = baseType.fromMemory(ctx, addr);
-                    return (baseValue & flag) === flag;
-                },
-                (_, p, newValue) => {
-                    const flag = flagDef[p];
-                    let baseValue = baseType.fromMemory(ctx, addr);
-                    if (newValue) {
-                        baseValue |= flag;
-                    } else {
-                        baseValue &= ~flag;
-                    }
-                    baseType.toMemory(ctx, addr, baseValue);
-                    return true;
-                },
-            );
-        },
-        symbols: baseType.symbols as B['symbols'],
+        lazilyAccess: createLazilyProxyAccesser({
+            baseObjectFactory() {
+                return { ...zeroFlagValue };
+            },
+            has(p) {
+                return p in flagDef;
+            },
+            get(ctx, address, p) {
+                const flag = flagDef[p];
+                const baseValue = baseType.fromMemory(ctx, address);
+                return (baseValue & flag) === flag;
+            },
+            set(ctx, address, p, newValue) {
+                const flag = flagDef[p];
+                let baseValue = baseType.fromMemory(ctx, address);
+                if (newValue) {
+                    baseValue |= flag;
+                } else {
+                    baseValue &= ~flag;
+                }
+                baseType.toMemory(ctx, address, baseValue);
+                return true;
+            },
+        }),
     });
 }
 
@@ -703,9 +792,9 @@ export type StructDefToTypeMap<T extends Record<string, MCUTypeDef | [MCUTypeDef
  * 构造结构体类型。
  * @param name 结构体类型的名称。
  * @param structDef 结构体定义对象。键为字段名称，值为字段类型或类型与偏移量的元组。
- * @param align 可选的对齐方式。默认为最大字段对齐方式。
+ * @param align 可选的对齐方式。默认为字段自身的对齐方式。
  */
-export function makeStructure<T extends Record<string, MCUTypeDef | [MCUTypeDef, number?]>>(
+export function makeStructure<T extends Record<string, MCUTypeDef | [type: MCUTypeDef, offset?: number]>>(
     name: string,
     structDef: T,
     align?: number,
@@ -714,6 +803,7 @@ export function makeStructure<T extends Record<string, MCUTypeDef | [MCUTypeDef,
     let size = 0;
     const entries = [] as [string, MCUTypeDef, number][];
     const entryMap = new Map<string, [MCUTypeDef, number]>();
+    const objectTemplate = {} as { [K in keyof T]: ToJsType<StructDef[K]> };
     const symbols = {} as { [K in keyof T]: MCUSymbolDef<StructDef[K]> };
     let maxAlign = align ?? 1;
     let nextOffset = 0;
@@ -722,18 +812,20 @@ export function makeStructure<T extends Record<string, MCUTypeDef | [MCUTypeDef,
         let offset = Array.isArray(def) ? (def[1] ?? 0) : nextOffset;
         const itemAlign = align ?? type.align;
         maxAlign = Math.max(maxAlign, itemAlign);
-        offset = alignedCeil(size, itemAlign);
+        offset = alignedCeil(offset, itemAlign);
         entries.push([key, type, offset]);
         entryMap.set(key, [type, offset]);
+        (objectTemplate as Record<string, unknown>)[key] = undefined;
         (symbols as SymbolDefintions)[key] = { type, address: offset };
         nextOffset = offset + type.size;
         size = Math.max(size, nextOffset);
     }
+    size = alignedCeil(size, maxAlign);
     const structType = mcuType(name, size, {
         align: maxAlign,
         symbols,
         deserialize: (buffer, offset, ctx, addr) => {
-            const obj = {} as { [K in keyof T]: ToJsType<StructDef[K]> };
+            const obj = { ...objectTemplate };
             for (const [key, type, entOffset] of entries) {
                 (obj as Record<string, unknown>)[key] = deserialize(
                     ctx,
@@ -758,28 +850,23 @@ export function makeStructure<T extends Record<string, MCUTypeDef | [MCUTypeDef,
             }
             return offset + size;
         },
-        lazilyAccess(ctx, addr) {
-            const obj = {} as { [K in keyof T]: ToJsType<StructDef[K]> };
-            for (const [key] of entries) {
-                (obj as Record<string, undefined>)[key] = undefined;
-            }
-            return createLazilyAccessProxy(
-                ctx,
-                this,
-                addr,
-                obj,
-                (_, p) => entryMap.has(p),
-                (_, p) => {
-                    const [type, offset] = entryMap.get(p)!;
-                    return type.lazilyAccess(ctx, addr + offset);
-                },
-                (_, p, newValue) => {
-                    const [type, offset] = entryMap.get(p)!;
-                    type.toMemory(ctx, addr + offset, newValue);
-                    return true;
-                },
-            );
-        },
+        lazilyAccess: createLazilyProxyAccesser({
+            baseObjectFactory() {
+                return { ...objectTemplate };
+            },
+            has(p) {
+                return entryMap.has(p);
+            },
+            get(ctx, address, p) {
+                const [type, offset] = entryMap.get(p)!;
+                return type.lazilyAccess(ctx, address + offset);
+            },
+            set(ctx, address, p, newValue) {
+                const [type, offset] = entryMap.get(p)!;
+                type.toMemory(ctx, address + offset, newValue);
+                return true;
+            },
+        }),
     });
     return structType;
 }
@@ -792,19 +879,22 @@ export function makeStructure<T extends Record<string, MCUTypeDef | [MCUTypeDef,
 export function makeUnion<T extends Record<string, MCUTypeDef>>(name: string, unionDef: T) {
     const def = { ...unionDef };
     const entries = Object.entries(def);
+    const objectTemplate = {} as { [K in keyof T]: ToJsType<T[K]> };
     const symbols = {} as { [K in keyof T]: MCUSymbolDef<T[K]> };
     let maxSize = 0;
     let maxAlign = 1;
     for (const [key, def] of entries) {
         maxAlign = Math.max(maxAlign, def.align);
         maxSize = Math.max(maxSize, def.size);
+        (objectTemplate as Record<string, unknown>)[key] = undefined;
         (symbols as SymbolDefintions)[key] = { type: def, address: 0 };
     }
+    maxSize = alignedCeil(maxSize, maxAlign);
     const unionType = mcuType(name, maxSize, {
         align: maxAlign,
         symbols,
         deserialize: (buffer, offset, ctx, addr) => {
-            const obj = {} as { [K in keyof T]: ToJsType<T[K]> };
+            const obj = { ...objectTemplate };
             for (const [key, def] of entries) {
                 (obj as Record<string, unknown>)[key] = deserialize(ctx, def, buffer, offset, addr);
             }
@@ -816,24 +906,21 @@ export function makeUnion<T extends Record<string, MCUTypeDef>>(name: string, un
             }
             return offset + maxSize;
         },
-        lazilyAccess(ctx, addr) {
-            const obj = {} as LazilyAccessObjectOrValue<T>;
-            for (const [key] of entries) {
-                (obj as Record<string, undefined>)[key] = undefined;
-            }
-            return createLazilyAccessProxy(
-                ctx,
-                this,
-                addr,
-                obj,
-                (_, p) => Object.hasOwn(def, p),
-                (_, p) => def[p].lazilyAccess(ctx, addr),
-                (_, p, newValue) => {
-                    def[p].toMemory(ctx, addr, newValue);
-                    return true;
-                },
-            );
-        },
+        lazilyAccess: createLazilyProxyAccesser({
+            baseObjectFactory() {
+                return { ...objectTemplate };
+            },
+            has(p) {
+                return Object.hasOwn(def, p);
+            },
+            get(ctx, address, p) {
+                return def[p].lazilyAccess(ctx, address);
+            },
+            set(ctx, address, p, newValue) {
+                def[p].toMemory(ctx, address, newValue);
+                return true;
+            },
+        }),
     });
     return unionType;
 }
@@ -1017,12 +1104,9 @@ export function makePointer<T extends MCUTypeDef>(pointerType: MCUTypeDef<number
         serialize: (buffer, offset, value, ctx, addr) => {
             return serialize(ctx, pointerType, value.address, buffer, offset, addr);
         },
-        lazilyAccess(ctx, addr) {
+        lazilyAccess: createLazilyAccessor((ctx, addr) => {
             const getAddress = () => pointerType.fromMemory(ctx, addr);
-            const ptr = {
-                [NativeType]: this,
-                [MemoryAddress]: addr,
-            } as LazilyAccessObject<MCUPointer<T>>;
+            const ptr = {} as MCUPointer<T>;
             Object.defineProperty(ptr, 'address', {
                 configurable: true,
                 enumerable: true,
@@ -1041,7 +1125,7 @@ export function makePointer<T extends MCUTypeDef>(pointerType: MCUTypeDef<number
                 get: () => createSymbol(ctx, getAddress(), type),
             });
             return ptr;
-        },
+        }),
     });
 }
 
@@ -1057,23 +1141,24 @@ export function makePointerType(pointerType: MCUTypeDef<number>) {
  * 表示一段内存区域。
  */
 export class MCUSpan {
-    private context: MCUContext;
-    private type: MCUTypeDef<MCUSpan> | undefined;
-    private _symbol: MCUSymbol<MCUTypeDef<MCUSpan>> | undefined;
+    #type: MCUTypeDef<MCUSpan> | undefined;
+    #symbol: MCUSymbol<MCUTypeDef<MCUSpan>> | undefined;
+    readonly context: MCUContext;
     readonly address: number;
     readonly size?: number;
+
     constructor(ctx: MCUContext, addr: number, size?: number, type?: MCUTypeDef<MCUSpan>) {
         this.context = ctx;
-        this.type = type;
+        this.#type = type;
         this.address = addr;
         this.size = size;
     }
 
     get [NativeType]() {
-        if (!this.type) {
-            this.type = makeSpan(this.size);
+        if (!this.#type) {
+            this.#type = makeSpan(this.size);
         }
-        return this.type;
+        return this.#type;
     }
 
     get [MemoryAddress]() {
@@ -1081,13 +1166,13 @@ export class MCUSpan {
     }
 
     get symbol() {
-        if (!this._symbol) {
-            this._symbol = createSymbol(this.context, this.address, this[NativeType]);
+        if (!this.#symbol) {
+            this.#symbol = createSymbol(this.context, this.address, this[NativeType]);
         }
-        return this._symbol;
+        return this.#symbol;
     }
 
-    private checkValidIndex(value: number, allowEqual?: boolean) {
+    protected checkValidIndex(value: number, allowEqual?: boolean) {
         if (value < 0 || Number.isNaN(value) || !Number.isSafeInteger(value)) {
             return false;
         }
@@ -1365,6 +1450,7 @@ export function makeSpan(size?: number) {
             toMemory: () => {
                 throw new Error(`Invalid operation, use MCUSpan.copyTo instead.`);
             },
+            lazilyAccess: createLazilyAccessor(),
         });
         return type;
     } else {
@@ -1376,16 +1462,25 @@ export function makeSpan(size?: number) {
                 toMemory: () => {
                     throw new Error(`Invalid operation, use MCUSpan.copyTo instead.`);
                 },
+                lazilyAccess: createLazilyAccessor(),
             });
         }
         return infiniteSpanType;
     }
 }
 
+/**
+ * 将函数类型转换为异步函数类型。
+ */
 export type ToAsyncFunction<F extends (...args: never[]) => unknown> = (
     ...args: Parameters<F>
 ) => Promise<Awaited<ReturnType<F>>>;
 
+/**
+ * MCUFunctionDef 接口标签。存储对应的 JavaScript 函数签名。
+ *
+ * 该符号只有类型信息，实际上该导出变量并不存在。
+ */
 export declare const signatureTag: unique symbol;
 
 /**
@@ -1431,12 +1526,21 @@ export type CallFactory = {
     ): MCUFunctionDef<F>;
 };
 
+/**
+ * 详见 {@link makeCallConvention}。
+ */
 export type CallFactoryCleanUp<F extends (...args: never[]) => unknown> = (
     error?: null | Error,
 ) => Promisable<ReturnType<F>>;
+/**
+ * 详见 {@link makeCallConvention}。
+ */
 export type CallFactoryPrepare<F extends (...args: never[]) => unknown> = (
     ...args: Parameters<F>
 ) => Promisable<CallFactoryCleanUp<F>>;
+/**
+ * 详见 {@link makeCallConvention}。
+ */
 export type CallFactoryInitialize = <F extends (...args: never[]) => unknown>(
     ctx: MCUContext,
     address: number,
@@ -1448,9 +1552,9 @@ export type CallFactoryInitialize = <F extends (...args: never[]) => unknown>(
 /**
  * 创建调用约定。
  *
- * - `CallFactoryInitialize` 初始化堆栈结构。在定义函数时被调用。
- * - `CallFactoryPrepare` 用给定参数填充给寄存器与堆栈。在调用函数时被调用。
- * - `CallFactoryCleanUp` 恢复寄存器与堆栈，获取返回值（如果成功）。在函数调用结束后被调用。
+ * - {@link CallFactoryInitialize} 初始化堆栈结构。在定义函数时被调用。
+ * - {@link CallFactoryPrepare} 用给定参数填充给寄存器与堆栈。在调用函数时被调用。
+ * - {@link CallFactoryCleanUp} 恢复寄存器与堆栈，获取返回值（如果成功）。在函数调用结束或出错后被调用。
  *
  * @param initialize 调用约定初始化函数。
  * @returns 函数工厂。
@@ -1503,15 +1607,15 @@ export function makeCallConvention(initialize: CallFactoryInitialize): CallFacto
 }
 
 /**
- * 创建复杂调用约定。
+ * 创建复合调用约定。
  *
- * 复杂调用约定适用于返回类型较为复杂的情形。函数被调用时会修改第一个参数指向的内存，从而实现返回复杂的值。
+ * 复合调用约定适用于返回类型为大于 4 字节的复合类型的情形。函数被调用时会修改第一个参数指向的内存，从而实现返回复合类型。
  *
  * @param factory 原始函数工厂。
  * @param outRefType 输出引用类型。
  * @returns 函数工厂。
  */
-export function makeComplexCall(
+export function makeCompositeCall(
     factory: CallFactory,
     outRefType: <T extends MCUTypeDef>(type: T) => MCUTypeDef<OutRef<ToJsType<T>>>,
 ): CallFactory {
@@ -1552,6 +1656,7 @@ export function makeFunctionType<F extends MCUFunctionDef>(name: string, def: F)
         toMemory: () => {
             throw new Error(`Cannot change the value of function type ${name}.`);
         },
+        lazilyAccess: createLazilyAccessor<ToJsFunction<F>>(),
     });
     let definedSize: number | undefined;
     Object.defineProperty(type, 'size', {
@@ -1583,7 +1688,7 @@ export interface MCUAllocation {
      */
     readonly size: number;
     /**
-     * 内存对齐。
+     * 内存对齐方式。
      */
     readonly align?: number;
     /**
@@ -1606,7 +1711,7 @@ export interface MCUAutoAllocation {
      */
     readonly size: number;
     /**
-     * 内存对齐。
+     * 内存对齐方式。
      */
     readonly align?: number;
     /**
@@ -1628,7 +1733,7 @@ export interface MCUAllocator {
      *
      * @param ctx 调用上下文。
      * @param size 待分配内存的大小。
-     * @param align 待分配内存的对齐大小。
+     * @param align 待分配内存的对齐方式。
      * @returns 栈内存分配。
      */
     allocateAuto(ctx: MCUContext, size: number, align?: number): MCUAutoAllocation | null;
@@ -1638,7 +1743,7 @@ export interface MCUAllocator {
      *
      * @param ctx 调用上下文。
      * @param size 待分配内存的大小。
-     * @param align 待分配内存的对齐大小。
+     * @param align 待分配内存的对齐方式。
      * @returns 堆内存分配。
      */
     allocate(ctx: MCUContext, size: number, align?: number): MCUAllocation | null;
@@ -1664,10 +1769,10 @@ export interface MCUAllocator {
 }
 
 export class DefaultStackAllocator implements MCUAllocator {
-    private allocations = new Set<MCUAllocation>();
-    private freeBlocks: [number, number][] = [];
-    private autoAllocations = new Set<MCUAutoAllocation>();
-    private commitStack?: (stackOffset?: number) => number | null;
+    protected allocations = new Set<MCUAllocation>();
+    protected freeBlocks: [number, number][] = [];
+    protected autoAllocations = new Set<MCUAutoAllocation>();
+    protected commitStack?: (stackOffset?: number) => number | null;
     allocateAuto(_ctx: MCUContext, size: number, align?: number): MCUAutoAllocation | null {
         const commitStack = this.commitStack;
         if (!commitStack) {
@@ -1714,7 +1819,7 @@ export class DefaultStackAllocator implements MCUAllocator {
         }
         return null;
     }
-    private free(alloc: MCUAllocation, address: number, endAddr: number) {
+    protected free(alloc: MCUAllocation, address: number, endAddr: number) {
         if (!this.allocations.has(alloc)) {
             throw new Error(`Allocation is already freed.`);
         }
@@ -1810,6 +1915,13 @@ function offsetAddressMap(symbolAddresses: SymbolAddresses, memoryOffset: number
     return newSymbolAddresses;
 }
 
+/**
+ * 将地址格式化为符号名与偏移的形式。
+ * @param symbolAddresses 符号表。
+ * @param address 地址。
+ * @param searchUpperBound 搜索范围上限。
+ * @param searchLowerBound 搜索范围下限。
+ */
 export function addressToString(
     symbolAddresses: SymbolAddresses,
     address: number,
@@ -1873,18 +1985,18 @@ export function createSymbol<T extends MCUTypeDef>(ctx: MCUContext, address: num
     Object.defineProperty(target, inspect.custom, {
         configurable: false,
         enumerable: false,
-        value: ((depth, inspectOptions, _inspect) => {
+        value: ((depth, inspectOptions) => {
             if (depth < 0) {
                 return `[Symbol ${type.name}]`;
             }
-            return _inspect(
+            return inspect(
                 { ...target },
                 {
                     ...inspectOptions,
                     depth: inspectOptions.depth! - 1,
                 },
             );
-        }) as CustomInspect,
+        }) as CustomInspectFunction,
     });
     Object.defineProperty(target, Symbol.toStringTag, {
         configurable: false,
@@ -2155,7 +2267,7 @@ export interface MCUCallOptions {
     heapSize?: number;
 
     /**
-     * 自定义内存分配器。可以继承 `DefaultStackAllocator` 实现自定义逻辑。
+     * 自定义内存分配器。可以继承 {@link DefaultStackAllocator} 实现自定义逻辑。
      */
     allocator?: MCUAllocator;
 
@@ -2228,15 +2340,16 @@ export function mcuCall(
                 }
                 const address = resolveAddress(name, symbolAddresses);
                 if (typeof typeOrBinder === 'function') {
+                    const functionType = makeFunctionType(name, typeOrBinder);
                     Object.defineProperty(this, name, {
                         configurable: true,
                         enumerable: true,
-                        value: typeOrBinder(ctx, address, name),
+                        value: markAsLazilyAccessObject(typeOrBinder(ctx, address, name), functionType, address),
                     });
                     Object.defineProperty(this.symbols, name, {
                         configurable: true,
                         enumerable: true,
-                        value: createSymbol(ctx, address, makeFunctionType(name, typeOrBinder)),
+                        value: createSymbol(ctx, address, functionType),
                     });
                 } else {
                     Object.defineProperty(this, name, {
