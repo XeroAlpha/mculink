@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { setImmediate } from 'node:timers/promises';
-import { type CustomInspectFunction, inspect } from 'node:util';
+import { inspect, type Inspectable } from 'node:util';
 import type { LiteralUnion, Promisable } from 'type-fest';
-import { alignedCeil, alignedFloor } from './binparse.js';
+import { alignedCeil } from './binparse.js';
 import { analyzeELF } from './elf.js';
 
 const NativeType = Symbol('nativeType');
@@ -65,16 +65,6 @@ export interface MCUContext {
      * 断点代码地址。
      */
     breakpoint: number | undefined;
-
-    /**
-     * 堆基址。
-     */
-    heapBase: number | undefined;
-
-    /**
-     * 堆上限地址。
-     */
-    heapLimit: number | undefined;
 
     /**
      * 调用超时时间，单位为毫秒。
@@ -470,7 +460,7 @@ export function createLazilyProxyAccesser<T extends object>(handlers: {
                     ...inspectOptions,
                     depth: inspectOptions.depth! - 1,
                 });
-            }) as CustomInspectFunction,
+            }) as Inspectable[typeof inspect.custom],
         });
         Object.defineProperty(baseObject, Symbol.toStringTag, { value: type.name });
         const proxy = new Proxy(baseObject, {
@@ -531,6 +521,28 @@ export function isLazilyAccessProxy<T>(value: T): value is LazilyAccessObject<T>
 }
 
 /**
+ * 标记某个类型定义无法在定义时确定大小。可以显式设置 `type.size` 来指定其大小。
+ * @param type 类型定义。
+ */
+export function markAsIncompleteType<T extends MCUTypeDef>(type: T) {
+    let definedSize: number | undefined;
+    Object.defineProperty(type, 'size', {
+        configurable: true,
+        enumerable: true,
+        get() {
+            if (definedSize !== undefined) {
+                return definedSize;
+            }
+            throw new Error(`Cannot determine the size of incomplete type ${type.name}.`);
+        },
+        set(value) {
+            definedSize = Number.isNaN(value) ? undefined : value;
+        },
+    });
+    return type;
+}
+
+/**
  * 将代理对象转换为原始对象。对转换后的对象的读写不会影响内存中的对象。
  * @param ctx MCU 调用上下文。
  * @param value 代理对象。
@@ -561,6 +573,21 @@ export function makePeripheral<T extends MCUTypeDef>(type: T) {
         peripheralTypeMap.set(type, peripheralType);
     }
     return peripheralType;
+}
+
+export type VariantValue<T extends MCUTypeDef> = [type: T, value: ToJsType<T>];
+export function makeVariantType(size: number) {
+    return mcuType<VariantValue<MCUTypeDef>>(`_Variant_(${size})`, size, {
+        deserialize: () => {
+            throw new Error(`Cannot read variant type because the concrete type is unknown at runtime.`);
+        },
+        serialize: (buffer, offset, value, ctx, addr) => {
+            if (value[0].size > size) {
+                throw new Error(`Variant type size overflow: expected at most ${size}, got ${value[0].size}.`);
+            }
+            return serialize(ctx, value[0], value[1], buffer, offset, addr);
+        },
+    });
 }
 
 /**
@@ -735,7 +762,7 @@ export function makeFlags<B extends MCUTypeDef<number>, T extends { [key: string
     baseType: B,
     flagDef: T,
 ) {
-    const flagDefEntries = Object.entries(flagDef) as [keyof T, ToJsType<B>][];
+    const flagDefEntries = Object.entries(flagDef) as [key: keyof T, flag: ToJsType<B>][];
     const zeroFlagValue = Object.fromEntries(flagDefEntries.map(([k]) => [k, false])) as { [K in keyof T]: boolean };
     return mcuType(name, baseType.size, {
         align: baseType.align,
@@ -784,7 +811,7 @@ export function makeFlags<B extends MCUTypeDef<number>, T extends { [key: string
     });
 }
 
-export type StructDefToTypeMap<T extends Record<string, MCUTypeDef | [MCUTypeDef, number?]>> = {
+export type StructDefToTypeMap<T extends Record<string, MCUTypeDef | [type: MCUTypeDef, offset?: number]>> = {
     [K in keyof T]: T[K] extends MCUTypeDef ? T[K] : T[K] extends [infer U extends MCUTypeDef, number?] ? U : never;
 };
 
@@ -801,8 +828,7 @@ export function makeStructure<T extends Record<string, MCUTypeDef | [type: MCUTy
 ) {
     type StructDef = StructDefToTypeMap<T>;
     let size = 0;
-    const entries = [] as [string, MCUTypeDef, number][];
-    const entryMap = new Map<string, [MCUTypeDef, number]>();
+    const entryMap = new Map<string, { type: MCUTypeDef; offset: number }>();
     const objectTemplate = {} as { [K in keyof T]: ToJsType<StructDef[K]> };
     const symbols = {} as { [K in keyof T]: MCUSymbolDef<StructDef[K]> };
     let maxAlign = align ?? 1;
@@ -813,8 +839,7 @@ export function makeStructure<T extends Record<string, MCUTypeDef | [type: MCUTy
         const itemAlign = align ?? type.align;
         maxAlign = Math.max(maxAlign, itemAlign);
         offset = alignedCeil(offset, itemAlign);
-        entries.push([key, type, offset]);
-        entryMap.set(key, [type, offset]);
+        entryMap.set(key, { type, offset });
         (objectTemplate as Record<string, unknown>)[key] = undefined;
         (symbols as SymbolDefintions)[key] = { type, address: offset };
         nextOffset = offset + type.size;
@@ -826,7 +851,7 @@ export function makeStructure<T extends Record<string, MCUTypeDef | [type: MCUTy
         symbols,
         deserialize: (buffer, offset, ctx, addr) => {
             const obj = { ...objectTemplate };
-            for (const [key, type, entOffset] of entries) {
+            for (const [key, { type, offset: entOffset }] of entryMap.entries()) {
                 (obj as Record<string, unknown>)[key] = deserialize(
                     ctx,
                     type,
@@ -838,7 +863,7 @@ export function makeStructure<T extends Record<string, MCUTypeDef | [type: MCUTy
             return obj;
         },
         serialize: (buffer, offset, value, ctx, addr) => {
-            for (const [key, type, entOffset] of entries) {
+            for (const [key, { type, offset: entOffset }] of entryMap.entries()) {
                 serialize(
                     ctx,
                     type,
@@ -858,11 +883,11 @@ export function makeStructure<T extends Record<string, MCUTypeDef | [type: MCUTy
                 return entryMap.has(p);
             },
             get(ctx, address, p) {
-                const [type, offset] = entryMap.get(p)!;
+                const { type, offset } = entryMap.get(p)!;
                 return type.lazilyAccess(ctx, address + offset);
             },
             set(ctx, address, p, newValue) {
-                const [type, offset] = entryMap.get(p)!;
+                const { type, offset } = entryMap.get(p)!;
                 type.toMemory(ctx, address + offset, newValue);
                 return true;
             },
@@ -1626,11 +1651,11 @@ export function makeCompositeCall(
         const funcDef = factory(voidType, outRefType(returnType), ...argumentTypes);
         return ((ctx, address, name) => {
             const func = funcDef(ctx, address, name) as unknown as (
-                out: [ReturnType<F>?],
+                out: OutRef<ReturnType<F>>,
                 ...args: Parameters<F>
             ) => Promise<void>;
             const wrapped = async (...args: Parameters<F>) => {
-                const outRef: [ReturnType<F>?] = [];
+                const outRef: OutRef<ReturnType<F>> = [];
                 await func(outRef, ...args);
                 return outRef[0]!;
             };
@@ -1658,27 +1683,13 @@ export function makeFunctionType<F extends MCUFunctionDef>(name: string, def: F)
         },
         lazilyAccess: createLazilyAccessor<ToJsFunction<F>>(),
     });
-    let definedSize: number | undefined;
-    Object.defineProperty(type, 'size', {
-        configurable: true,
-        enumerable: true,
-        get() {
-            if (definedSize !== undefined) {
-                return definedSize;
-            }
-            throw new Error(`Cannot determine the size of function type ${name}.`);
-        },
-        set(value) {
-            definedSize = Number.isNaN(value) ? undefined : value;
-        },
-    });
-    return type;
+    return markAsIncompleteType(type);
 }
 
 /**
- * 堆内存分配。需要手动调用 `free()` 释放。
+ * 堆内存分配。需要手动调用 `free()` 或使用 `using` 语法释放。
  */
-export interface MCUAllocation {
+export interface MCUAllocation extends Disposable {
     /**
      * 内存地址。
      */
@@ -1695,7 +1706,6 @@ export interface MCUAllocation {
      * 释放内存。
      */
     free(): void;
-    [Symbol.dispose](): void;
 }
 
 /**
@@ -1756,37 +1766,34 @@ export interface MCUAllocator {
      * 调用该终结器会导致所有从栈中分配的内存被释放。
      *
      * @param ctx 调用上下文。
-     * @param commit 栈指针的修改函数。提交偏移量，返回新的栈指针。
+     * @param commit
+     * 栈指针的修改函数。
+     * 提供 size 和 align 参数请求分配，返回分配区域的起始地址。如果不提供参数，则返回当前栈指针。
+     * 如果栈无效或无法分配足够的内存，返回 `null`。
      */
-    stackAccess(ctx: MCUContext, commit: (stackOffset?: number) => number | null): () => MCUFinalizer;
+    stackAccess(ctx: MCUContext, commit: (size?: number, align?: number) => number | null): () => MCUFinalizer;
 
     /**
      * 授予堆控制权。堆控制权不能被回收。
      *
      * @param ctx 调用上下文。
+     * @param heapBase 堆内存的起始地址。
+     * @param heapLimit 堆内存的结束地址。默认为无限大。
      */
-    heapAccess(ctx: MCUContext): void;
+    heapAccess(ctx: MCUContext, heapBase: number, heapLimit?: number): void;
 }
 
-export class DefaultStackAllocator implements MCUAllocator {
+export class DefaultAllocator implements MCUAllocator {
     protected allocations = new Set<MCUAllocation>();
-    protected freeBlocks: [number, number][] = [];
+    protected freeBlocks: [start: number, end: number][] = [];
     protected autoAllocations = new Set<MCUAutoAllocation>();
-    protected commitStack?: (stackOffset?: number) => number | null;
+    protected commitStack?: (size?: number, align?: number) => number | null;
     allocateAuto(_ctx: MCUContext, size: number, align?: number): MCUAutoAllocation | null {
         const commitStack = this.commitStack;
         if (!commitStack) {
             return null;
         }
-        const oldStackPointer = commitStack();
-        if (oldStackPointer === null) {
-            return null;
-        }
-        let stackPointer = oldStackPointer - size;
-        if (align !== undefined) {
-            stackPointer = alignedFloor(stackPointer, align);
-        }
-        const address = commitStack(stackPointer - oldStackPointer);
+        const address = commitStack(size, align);
         if (address === null) {
             return null;
         }
@@ -1848,7 +1855,7 @@ export class DefaultStackAllocator implements MCUAllocator {
             }
         }
     }
-    stackAccess(_ctx: MCUContext, commit: (stackOffset?: number) => number | null): () => MCUFinalizer {
+    stackAccess(_ctx: MCUContext, commit: (size?: number, align?: number) => number | null): () => MCUFinalizer {
         if (this.commitStack) {
             throw new Error(`stackAccess is called twice.`);
         }
@@ -1866,14 +1873,8 @@ export class DefaultStackAllocator implements MCUAllocator {
             };
         };
     }
-    heapAccess(ctx: MCUContext): void {
-        if (this.freeBlocks.length > 0) {
-            throw new Error(`heapAccess is called twice.`);
-        }
-        if (ctx.heapBase) {
-            this.freeBlocks = [[ctx.heapBase, ctx.heapLimit ?? Infinity]];
-            this.allocations.clear();
-        }
+    heapAccess(_ctx: MCUContext, heapBase: number, heapLimit?: number): void {
+        this.freeBlocks.push([heapBase, heapLimit ?? Infinity]);
     }
 }
 
@@ -1996,7 +1997,7 @@ export function createSymbol<T extends MCUTypeDef>(ctx: MCUContext, address: num
                     depth: inspectOptions.depth! - 1,
                 },
             );
-        }) as CustomInspectFunction,
+        }) as Inspectable[typeof inspect.custom],
     });
     Object.defineProperty(target, Symbol.toStringTag, {
         configurable: false,
@@ -2116,7 +2117,6 @@ export type MCUCall<
      */
     sizeOf<T extends MCUTypeDef>(symbol: TypedValue<T>): number;
 
-    // biome-ignore format: https://github.com/biomejs/biome/issues/8354
     /**
      * 尝试在堆中为指定类型分配内存，并返回内存分配与引用。
      * @param type 类型定义。
@@ -2243,21 +2243,21 @@ export interface MCUCallOptions {
      *
      * 默认为 `BKPT_FUNCTION` 符号。如果未找到，调用工厂会在调用函数前在栈中添加断点代码，在函数返回后恢复。
      *
-     * 如果 MCU 不支持执行栈中的代码时，需要手动指定断点代码的位置。
+     * 如果 MCU 不支持执行栈中的代码，则需要手动指定断点代码的位置。
      */
     breakpoint?: number | string;
 
     /**
      * 堆内存起始地址或符号名。
      *
-     * 默认为 `HEAP_BASE` 或 `__heap_base` 符号。
+     * 默认为 `HEAP_BASE` 符号。
      */
     heap?: number | string;
 
     /**
      * 堆内存最大地址或符号名。
      *
-     * 默认为 `HEAP_LIMIT` 或 `__heap_limit` 符号。
+     * 默认为 `HEAP_LIMIT` 符号。
      */
     heapLimit?: number | string;
 
@@ -2267,7 +2267,7 @@ export interface MCUCallOptions {
     heapSize?: number;
 
     /**
-     * 自定义内存分配器。可以继承 {@link DefaultStackAllocator} 实现自定义逻辑。
+     * 自定义内存分配器。可以继承 {@link DefaultAllocator} 实现自定义逻辑。
      */
     allocator?: MCUAllocator;
 
@@ -2303,21 +2303,21 @@ export function mcuCall(
     if (options?.memoryOffset !== undefined) {
         symbolAddresses = offsetAddressMap(symbolAddresses, options.memoryOffset);
     }
-    const allocator = options?.allocator ?? new DefaultStackAllocator();
+    const allocator = options?.allocator ?? new DefaultAllocator();
     const breakpoint = resolveAddress(options?.breakpoint, symbolAddresses, 'BKPT_FUNCTION');
-    const heapBase = resolveAddress(options?.heap, symbolAddresses, 'HEAP_BASE', '__heap_base');
-    const heapLimit = resolveAddress(options?.heapLimit, symbolAddresses, 'HEAP_LIMIT', '__heap_limit');
+    const heapBase = resolveAddress(options?.heap, symbolAddresses, 'HEAP_BASE');
+    const heapLimit = resolveAddress(options?.heapLimit, symbolAddresses, 'HEAP_LIMIT');
     const heapLimitBySize = heapBase !== undefined && options?.heapSize ? heapBase + options.heapSize : undefined;
     const ctx = {
         link,
         allocator,
         symbolAddresses,
         breakpoint,
-        heapBase,
-        heapLimit: heapLimitBySize ?? heapLimit,
         callTimeout: options?.callTimeout ?? Infinity,
     } as MCUContext;
-    ctx.allocator.heapAccess(ctx);
+    if (heapBase) {
+        ctx.allocator.heapAccess(ctx, heapBase, heapLimitBySize ?? heapLimit);
+    }
     const addressOf = (symbolOrAddress: string | number | Record<never, never>) => {
         if (symbolOrAddress === undefined) {
             throw new Error(`Symbol is undefined`);
@@ -2425,7 +2425,7 @@ export function mcuCall(
                 try {
                     inferredSize = symbolOrAddress[NativeType].size;
                 } catch (_err) {
-                    // ignore unreadable size
+                    // ignore incomplete type
                 }
             }
             return new MCUSpan(ctx, address, inferredSize);

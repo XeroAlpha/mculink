@@ -5,56 +5,6 @@ import { setTimeout as delay } from 'node:timers/promises';
 import koffi from 'koffi';
 import { floatToUInt32, int32ToUnsigned, uint32ToFloat, uint32ToSigned } from './binparse.js';
 
-function findLibrary() {
-    const platform = os.platform();
-    if (platform === 'win32' || platform === 'cygwin') {
-        return findLibraryWindows();
-    }
-    if (platform === 'linux') {
-        return findLibraryLinux();
-    }
-    if (platform === 'darwin') {
-        return findLibraryDarwin();
-    }
-    throw new Error(`Unsupported platform: ${platform}`);
-}
-
-function findLibraryWindows() {
-    const arch = os.arch();
-    const is64Bit = arch === 'x64' || arch === 'arm64';
-    const dllName = `${is64Bit ? 'JLink_x64' : 'JLinkARM'}.dll`;
-    const root = 'C:\\';
-    const programFilesDirs = readdirSync(root, { withFileTypes: true }).filter(
-        (n) => n.isDirectory() && n.name.startsWith('Program Files'),
-    );
-    const seggerPath = programFilesDirs
-        .map((p) => joinPath(root, p.name, 'SEGGER'))
-        .filter((p) => existsSync(p) && statSync(p).isDirectory());
-    const jlinkPath = seggerPath.flatMap((p) => {
-        const children = readdirSync(p, { withFileTypes: true });
-        return children.filter((n) => n.name.startsWith('JLink')).map((n) => joinPath(p, n.name));
-    });
-    const dllPath = jlinkPath.map((p) => joinPath(p, dllName)).filter((p) => existsSync(p) && statSync(p).isFile());
-    return dllPath;
-}
-
-function findLibraryLinux() {
-    const seggerPath = '/opt/SEGGER';
-    const objName = 'libjlinkarm';
-    const versionPath = readdirSync(seggerPath, { withFileTypes: true })
-        .filter((n) => n.isDirectory())
-        .map((n) => joinPath(seggerPath, n.name));
-    const objPath = versionPath.flatMap((p) => {
-        const children = readdirSync(p, { withFileTypes: true });
-        return children.filter((n) => n.isFile() && n.name.startsWith(objName)).map((n) => joinPath(p, n.name));
-    });
-    return objPath;
-}
-
-function findLibraryDarwin(): string[] {
-    throw new Error('Unsupported platform: darwin');
-}
-
 export type JLinkConnectInfo = {
     serialNumber: number;
     connection: number;
@@ -282,36 +232,6 @@ export type JLinkMethods = {
     [key in keyof typeof JLinkMethodFactories]: ReturnType<(typeof JLinkMethodFactories)[key]>;
 };
 
-function getSupportedDeviceByIndex(jlink: JLink, index: number) {
-    const device = { szStruct: szJLinkDeviceInfo } as JLinkDeviceInfo;
-    jlink.methods.deviceGetInfo(index, device);
-    for (let j = device.aFlashArea.length - 1; j >= 0; j--) {
-        if (device.aFlashArea[j].addr === 0 && device.aFlashArea[j].size === 0) {
-            device.aFlashArea.splice(j, 1);
-        } else {
-            break;
-        }
-    }
-    for (let j = device.aRAMArea.length - 1; j >= 0; j--) {
-        if (device.aRAMArea[j].addr === 0 && device.aRAMArea[j].size === 0) {
-            device.aRAMArea.splice(j, 1);
-        } else {
-            break;
-        }
-    }
-    return device;
-}
-
-function openConnection(jlink: JLink) {
-    const result = jlink.methods.openEx(jlink.logHandlerNative, jlink.errorHandlerNative);
-    if (result) {
-        throw new Error(result);
-    }
-    if (jlink.methods.setHookUnsecureDialog) {
-        jlink.methods.setHookUnsecureDialog(jlink.unsecureHookNative);
-    }
-}
-
 /**
  * J-Link仿真器打开选项。
  */
@@ -341,16 +261,16 @@ export class JLink implements Disposable {
     warnHandler: JLinkLogPrototype | undefined;
     errorHandler: JLinkLogPrototype | undefined;
     unsecureHook: JLinkUnsecureHookPrototype | undefined;
-    processExitListener: () => void;
-    logHandlerNative: koffi.IKoffiRegisteredCallback;
-    warnHandlerNative: koffi.IKoffiRegisteredCallback;
-    errorHandlerNative: koffi.IKoffiRegisteredCallback;
-    unsecureHookNative: koffi.IKoffiRegisteredCallback;
     endianness = os.endianness();
-    registerNameLookup: Record<string, number> = {};
-    openOptions: OpenOptions | undefined;
-    connectOptions: ConnectOptions | undefined;
-    deviceInfo: JLinkDeviceInfo | undefined;
+    private processExitListener: () => void;
+    private logHandlerNative: koffi.IKoffiRegisteredCallback;
+    private warnHandlerNative: koffi.IKoffiRegisteredCallback;
+    private errorHandlerNative: koffi.IKoffiRegisteredCallback;
+    private unsecureHookNative: koffi.IKoffiRegisteredCallback;
+    private registerNameLookup: Record<string, number> = {};
+    private openOptions: OpenOptions | undefined;
+    private connectOptions: ConnectOptions | undefined;
+    private deviceInfo: JLinkDeviceInfo | undefined;
 
     /**
      * 创建一个新的JLink实例。
@@ -363,7 +283,7 @@ export class JLink implements Disposable {
         if (typeof libPath === 'string') {
             library = koffi.load(libPath);
         } else {
-            const libPaths = findLibrary();
+            const libPaths = JLink.findLibrary();
             if (libPath !== undefined) {
                 libPaths.unshift(...libPath);
             }
@@ -410,6 +330,56 @@ export class JLink implements Disposable {
         process.on('exit', this.processExitListener);
     }
 
+    private static findLibrary() {
+        const platform = os.platform();
+        if (platform === 'win32' || platform === 'cygwin') {
+            return JLink.findLibraryWindows();
+        }
+        if (platform === 'linux') {
+            return JLink.findLibraryLinux();
+        }
+        if (platform === 'darwin') {
+            return JLink.findLibraryDarwin();
+        }
+        throw new Error(`Unsupported platform: ${platform}`);
+    }
+
+    private static findLibraryWindows() {
+        const arch = os.arch();
+        const is64Bit = arch === 'x64' || arch === 'arm64';
+        const dllName = `${is64Bit ? 'JLink_x64' : 'JLinkARM'}.dll`;
+        const root = 'C:\\';
+        const programFilesDirs = readdirSync(root, { withFileTypes: true }).filter(
+            (n) => n.isDirectory() && n.name.startsWith('Program Files'),
+        );
+        const seggerPath = programFilesDirs
+            .map((p) => joinPath(root, p.name, 'SEGGER'))
+            .filter((p) => existsSync(p) && statSync(p).isDirectory());
+        const jlinkPath = seggerPath.flatMap((p) => {
+            const children = readdirSync(p, { withFileTypes: true });
+            return children.filter((n) => n.name.startsWith('JLink')).map((n) => joinPath(p, n.name));
+        });
+        const dllPath = jlinkPath.map((p) => joinPath(p, dllName)).filter((p) => existsSync(p) && statSync(p).isFile());
+        return dllPath;
+    }
+
+    private static findLibraryLinux() {
+        const seggerPath = '/opt/SEGGER';
+        const objName = 'libjlinkarm';
+        const versionPath = readdirSync(seggerPath, { withFileTypes: true })
+            .filter((n) => n.isDirectory())
+            .map((n) => joinPath(seggerPath, n.name));
+        const objPath = versionPath.flatMap((p) => {
+            const children = readdirSync(p, { withFileTypes: true });
+            return children.filter((n) => n.isFile() && n.name.startsWith(objName)).map((n) => joinPath(p, n.name));
+        });
+        return objPath;
+    }
+
+    private static findLibraryDarwin(): string[] {
+        throw new Error('Unsupported platform: darwin');
+    }
+
     [Symbol.dispose](): void {
         process.removeListener('exit', this.processExitListener);
         this.close();
@@ -444,6 +414,26 @@ export class JLink implements Disposable {
         return infos.slice(0, foundLength);
     }
 
+    private getSupportedDeviceByIndex(index: number) {
+        const device = { szStruct: szJLinkDeviceInfo } as JLinkDeviceInfo;
+        this.methods.deviceGetInfo(index, device);
+        for (let j = device.aFlashArea.length - 1; j >= 0; j--) {
+            if (device.aFlashArea[j].addr === 0 && device.aFlashArea[j].size === 0) {
+                device.aFlashArea.splice(j, 1);
+            } else {
+                break;
+            }
+        }
+        for (let j = device.aRAMArea.length - 1; j >= 0; j--) {
+            if (device.aRAMArea[j].addr === 0 && device.aRAMArea[j].size === 0) {
+                device.aRAMArea.splice(j, 1);
+            } else {
+                break;
+            }
+        }
+        return device;
+    }
+
     /**
      * 列出所有支持的设备。
      * @returns 支持的设备信息数组。
@@ -452,7 +442,7 @@ export class JLink implements Disposable {
         const deviceCount = this.methods.deviceGetInfo(-1, null);
         const devices = new Array<JLinkDeviceInfo>(deviceCount);
         for (let i = 0; i < deviceCount; i++) {
-            devices[i] = getSupportedDeviceByIndex(this, i);
+            devices[i] = this.getSupportedDeviceByIndex(i);
         }
         return devices;
     }
@@ -466,7 +456,17 @@ export class JLink implements Disposable {
         if (index < 0) {
             return undefined;
         }
-        return getSupportedDeviceByIndex(this, index);
+        return this.getSupportedDeviceByIndex(index);
+    }
+
+    private openConnection() {
+        const result = this.methods.openEx(this.logHandlerNative, this.errorHandlerNative);
+        if (result) {
+            throw new Error(result);
+        }
+        if (this.methods.setHookUnsecureDialog) {
+            this.methods.setHookUnsecureDialog(this.unsecureHookNative);
+        }
     }
 
     /**
@@ -496,7 +496,7 @@ export class JLink implements Disposable {
                 throw new Error(`Could not connect to default emulator.`);
             }
         }
-        openConnection(this);
+        this.openConnection();
         this.openOptions = {
             serialNumber: options?.serialNumber,
             host: options?.host,

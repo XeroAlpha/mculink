@@ -246,7 +246,19 @@ buffer.value.fill(0);
 buffer.free();
 ```
 
+或者使用 `using` 语法：
+
+```typescript
+using buffer = mcu.new(...);
+```
+
 除此以外，部分类型还会在调用函数时自动从栈上分配空间，并在调用结束后自动释放。
+
+> [!WARNING]
+> 默认情况下 MCULink 使用 `HEAP_BASE` 与 `HEAP_LIMIT` 符号来识别堆。
+> 确保文件中存在对应的符号，否则会导致找不到堆而分配失败。
+>
+> MCULink 不使用 MCU 中的 C 内存分配器（`malloc`），避免将同一块内存同时分配给 C 内存分配器与 MCULink。
 
 ### 内存底层操作
 
@@ -276,7 +288,8 @@ span.copyTo(anotherSpan);
 ## 待定功能
 
 - 可变参数：可能不会实现，因为函数工厂的类型定义无法实现该功能。
-- 位域
+- 位域：仅用于兼容
+- 传入动态大小类型的引用参数时，支持自动分配动态大小
 
 ## 贡献
 

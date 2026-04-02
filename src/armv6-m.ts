@@ -1,3 +1,6 @@
+/**
+ * @module mculink/armv6-m
+ */
 import { alignedCeil, alignedFloor } from './binparse.js';
 import {
     addressToString,
@@ -145,11 +148,16 @@ export const armCall = makeCallConvention((ctx, address, _name, returnType, ...a
             writingRegisters.R14 = writingRegisters.R13 + 1; // Thumb
             link.writeMemory(writingRegisters.R13, InStackBreakpoint);
         }
-        const release = ctx.allocator.stackAccess(ctx, (offset) => {
-            if (offset !== undefined) {
-                writingRegisters.R13 += offset;
+        const release = ctx.allocator.stackAccess(ctx, (size, align) => {
+            if (size === undefined || size === 0) {
+                return writingRegisters.R13;
             }
-            return writingRegisters.R13;
+            let newSP = writingRegisters.R13 - size;
+            if (align !== undefined) {
+                newSP = alignedFloor(newSP, align);
+            }
+            writingRegisters.R13 = newSP;
+            return newSP;
         });
         const stackBuffer = Buffer.alloc(stackSize);
         for (let i = 0; i < argumentTypes.length; i++) {
