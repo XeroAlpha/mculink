@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { setImmediate } from 'node:timers/promises';
-import { inspect, type Inspectable } from 'node:util';
+import { type Inspectable, inspect } from 'node:util';
 import type { LiteralUnion, Promisable } from 'type-fest';
 import { alignedCeil } from './binparse.js';
 import { analyzeELF } from './elf.js';
+import type { JLink } from './jlink.js';
 
 const NativeType = Symbol('nativeType');
 const MemoryAddress = Symbol('memoryAddress');
@@ -12,9 +13,9 @@ const MemoryAddress = Symbol('memoryAddress');
 export type EmptyKeyObject = {};
 
 /**
- * 代理对象。
+ * Dynamic view.
  *
- * 对代理对象的访问与修改会自动进行序列化/反序列化，并同步至 MCU 内存。
+ * Accessing a dynamic view serializes/deserializes and synchronizes with MCU memory automatically.
  */
 export type LazilyAccessObject<T = object> = T & {
     readonly [NativeType]: MCUTypeDef<T>;
@@ -23,7 +24,7 @@ export type LazilyAccessObject<T = object> = T & {
 export type LazilyAccessObjectOrValue<T> = T extends object ? LazilyAccessObject<T> : T;
 
 /**
- * MCU 交互接口。参见 JLink。
+ * The low-level hardware link instance. See {@link JLink}.
  */
 export interface MCULink {
     halt(): boolean;
@@ -38,131 +39,129 @@ export interface MCULink {
 }
 
 /**
- * 符号表。
+ * Symbol table.
  */
 export type SymbolAddresses = Record<string, number>;
 
 /**
- * MCU 调用上下文。
+ * MCU call context.
  */
 export interface MCUContext {
     /**
-     * MCU 交互接口。
+     * MCU interaction interface.
      */
     link: MCULink;
 
     /**
-     * 内存分配器。
+     * Memory allocator.
      */
     allocator: MCUAllocator;
 
     /**
-     * 符号表。
+     * Symbol table.
      */
     symbolAddresses: SymbolAddresses;
 
     /**
-     * 断点代码地址。
+     * Breakpoint code address.
      */
     breakpoint: number | undefined;
 
     /**
-     * 调用超时时间，单位为毫秒。
+     * Call timeout in milliseconds.
      */
     callTimeout: number;
 }
 
 /**
- * MCUTypeDef 接口标签。存储对应的 JavaScript 类型。
- *
- * 该符号只有类型信息，实际上该导出变量并不存在。
+ * MCUTypeDef interface tag. Stores the corresponding JavaScript type.
  */
 export declare const typeTag: unique symbol;
 
 /**
- * 类型定义。描述类型如何在内存/栈/寄存器中存储，以及序列化与反序列化的方式。
+ * Type definition. Describes memory/stack/register storage, serialization, and deserialization.
  */
 export interface MCUTypeDef<T = unknown, N extends SymbolDefintions = EmptyKeyObject> {
     [typeTag]: T;
 
     /**
-     * 类型的符号命名空间。
+     * Symbol namespace for the type.
      */
     symbols: N;
 
     /**
-     * 类型名称（例如 `char`）。
+     * Type name (e.g., `char`).
      */
     name: string;
 
     /**
-     * 类型大小，`sizeof(Type)`，单位为字节。
+     * Type size, `sizeof(Type)`, in bytes.
      */
     size: number;
 
     /**
-     * 对齐方式，`__alignof__(Type)`，单位为字节。
+     * Alignment, `__alignof__(Type)`, in bytes.
      */
     align: number;
 
     /**
-     * 从内存中读取值。
-     * @param ctx 调用上下文。
-     * @param addr 内存地址。
-     * @param buffer 提前读取的缓冲区（如有）。尽可能使用该缓冲区以减少单独读取的开销。
-     * @param offset 值在该缓冲区中的位置。
+     * Read a value from memory.
+     * @param ctx Call context.
+     * @param addr Memory address.
+     * @param buffer Optional prefetched buffer. Reads from here if available to avoid redundant hardware reads.
+     * @param offset Position within the buffer to start reading from.
      */
     fromMemory(ctx: MCUContext, addr: number, buffer?: Buffer, offset?: number): T;
 
     /**
-     * 向内存中写入值。
+     * Write a value to memory.
      *
-     * 如果提供了 `buffer` 且需要向 `addr` 对应的内存区域写入数据，则必须将数据写入 `buffer` 中，否则写入的数据可能会被覆盖。
-     * @param ctx 调用上下文。
-     * @param addr 内存地址。
-     * @param value 待写入的值。
-     * @param buffer 延后写入的缓冲区（如有）。如果不为 `null`，写入该缓冲区而非内存中以减少单独写入的开销。
-     * @param offset 值在该缓冲区中的位置。
-     * @returns 如果写入了延后写入的缓冲区，返回 offset + 写入的大小，否则不返回。
+     * If `buffer` is provided, write data into it instead of memory to reduce write overhead.
+     * @param ctx Call context.
+     * @param addr Memory address.
+     * @param value Value to write.
+     * @param buffer Optional staging buffer. If provided, data is written here for later sync.
+     * @param offset Position within the buffer to start writing.
+     * @returns Offset + size written if buffered; otherwise `undefined`.
      */
     toMemory(ctx: MCUContext, addr: number, value: T, buffer?: Buffer, offset?: number): number | undefined;
 
     /**
-     * 返回一个代理对象。当它的成员被访问时才会实际执行访问操作。
+     * Returns a lazy-access dynamic view. Data is read from/written to memory only when properties are accessed.
      *
-     * 如果该类型无法实现懒访问，则会使用 `fromMemory`。
-     * @param ctx 调用上下文。
-     * @param addr 内存地址。
+     * Falls back to `fromMemory` if lazy access is not supported.
+     * @param ctx Call context.
+     * @param addr Memory address.
      */
     lazilyAccess(this: MCUTypeDef<T, N>, ctx: MCUContext, addr: number): LazilyAccessObjectOrValue<T>;
 
     /**
-     * 将寄存器形式的值转换为原始值。一般用于读取函数的返回值。
-     * @param ctx 调用上下文。
-     * @param buffer 读取的缓冲区。
-     * @param offset 值在该缓冲区中的位置。
+     * Convert raw register data into a value. Typically used to retrieve function return values.
+     * @param ctx Call context.
+     * @param buffer Read buffer.
+     * @param offset Position within the buffer to start reading from.
      */
     fromRegister(ctx: MCUContext, buffer: Buffer, offset: number): T;
 
     /**
-     * 将值转换为寄存器/栈中的形式。一般用于向函数传递参数。
-     * @param ctx 调用上下文。
-     * @param value 待写入的值。
-     * @param buffer 延后写入的缓冲区（如有）。如果不为 `null`，写入该缓冲区而非内存中以减少单独写入的开销。
-     * @param offset 值在该缓冲区中的位置。
-     * @returns offset + 写入的大小。
+     * Convert a value into raw register data. Typically used to pass function arguments.
+     * @param ctx Call context.
+     * @param value Value to write.
+     * @param buffer Write buffer.
+     * @param offset Position within the buffer to start writing.
+     * @returns Offset + size written.
      */
     toRegister(ctx: MCUContext, value: T, buffer: Buffer, offset: number): number;
 }
 
 /**
- * 类型定义的 JavaScript 表示。
+ * JavaScript representation of a type definition.
  */
 export type ToJsType<T extends MCUTypeDef> = T[typeof typeTag];
 
 /**
- * 收窄类型定义。
- * @param type 类型定义。
+ * Narrow a type definition.
+ * @param type Type definition.
  */
 export function narrowType<T extends MCUTypeDef>(type: T) {
     return {
@@ -173,20 +172,20 @@ export function narrowType<T extends MCUTypeDef>(type: T) {
 }
 
 /**
- * 符号定义。
+ * Symbol definition.
  */
 export type MCUSymbolDef<T extends MCUTypeDef = MCUTypeDef> = {
     /**
-     * 类型定义。
+     * Type definition.
      */
     type: T;
     /**
-     * 相对于父类型的地址偏移量。
+     * Address offset relative to the parent type.
      */
     address: number;
 };
 /**
- * 符号定义表。
+ * Symbol definition table.
  */
 export type SymbolDefintions = Partial<Record<string | number, MCUSymbolDef>>;
 
@@ -199,11 +198,11 @@ export type MCUTypeDefAccessors<T, N extends SymbolDefintions = EmptyKeyObject> 
               fromMemory?: undefined;
 
               /**
-               * 从缓冲区中读取值。如果没有提前读取缓冲区，将创建一个缓冲区并读取对应的内存区域。
-               * @param buffer 用于读取的缓冲区。
-               * @param offset 值在该缓冲区中的位置。
-               * @param ctx 调用上下文。
-               * @param addr 内存地址。当读取源为寄存器时，不提供该值。
+               * Read a value from a buffer. Reads memory if no prefetched buffer is available.
+               * @param buffer Buffer to read from.
+               * @param offset Position within the buffer to start reading from.
+               * @param ctx Call context.
+               * @param addr Memory address. Not provided when the source is a register.
                */
               deserialize(buffer: Buffer, offset: number, ctx: MCUContext, addr?: number): T;
           }
@@ -214,20 +213,20 @@ export type MCUTypeDefAccessors<T, N extends SymbolDefintions = EmptyKeyObject> 
               toMemory?: undefined;
 
               /**
-               * 向缓冲区中写入值。如果没有延后写入缓冲区，将创建一个缓冲区并在写入后将缓冲区自动写入对应的内存区域。。
-               * @param buffer 用于写入的缓冲区。
-               * @param offset 值在该缓冲区中的位置。
-               * @param value 待写入的值。
-               * @param ctx 调用上下文。
-               * @param addr 内存地址。当写入目标为寄存器时，不提供该值。
-               * @returns 如果写入了缓冲区，返回 offset + 写入的大小。
+               * Write a value to a buffer. Writes to memory if no staging buffer is available.
+               * @param buffer Buffer to write to.
+               * @param offset Position within the buffer to start writing.
+               * @param value Value to write.
+               * @param ctx Call context.
+               * @param addr Memory address. Not provided when the target is a register.
+               * @returns Offset + size written.
                */
               serialize(buffer: Buffer, offset: number, value: T, ctx: MCUContext, addr?: number): number;
           }
     );
 
 /**
- * 定义一个类型。会补全部分可选的参数。
+ * Define a type. Fills in optional parameters.
  */
 export function mcuType<T, N extends SymbolDefintions = EmptyKeyObject>(
     name: string,
@@ -300,7 +299,7 @@ export function mcuType<T, N extends SymbolDefintions = EmptyKeyObject>(
 }
 
 /**
- * `void` 类型。
+ * `void` type.
  */
 export const voidType = mcuType<void>('void_t', 0, {
     fromMemory: () => undefined,
@@ -309,12 +308,12 @@ export const voidType = mcuType<void>('void_t', 0, {
 });
 
 /**
- * `void` 类型。
+ * `void` type.
  */
 export type VoidType = typeof voidType;
 
 /**
- * `never` 类型。当返回值为该类型时，不会等待调用结束。
+ * `never` type. Indicating that this function never completes.
  */
 export const neverType = mcuType<never>('never_t', 0, {
     fromMemory: () => {
@@ -326,18 +325,18 @@ export const neverType = mcuType<never>('never_t', 0, {
 });
 
 /**
- * `never` 类型。
+ * `never` type. Indicating that this function never completes.
  */
 export type NeverType = typeof neverType;
 
 /**
- * 从内存或缓冲区中反序列化数据为指定类型的值。
- * @param ctx MCU 调用上下文。
- * @param type MCU 类型定义。
- * @param buffer 可选的缓冲区。
- * @param offset 缓冲区中的偏移量。
- * @param addr 可选的内存地址。
- * @returns 反序列化后的值。
+ * Deserialize data from memory or a buffer into a value.
+ * @param ctx MCU call context.
+ * @param type MCU type definition.
+ * @param buffer Optional buffer.
+ * @param offset Offset within the buffer.
+ * @param addr Optional memory address.
+ * @returns Deserialized value.
  */
 export function deserialize<T>(
     ctx: MCUContext,
@@ -351,18 +350,18 @@ export function deserialize<T>(
     } else if (buffer !== undefined && offset !== undefined) {
         return type.fromRegister(ctx, buffer, offset);
     }
-    throw new Error(`Source is unknown.`);
+    throw new Error(`Cannot deserialize since either address nor buffer is provided.`);
 }
 
 /**
- * 将指定类型的值序列化到内存或缓冲区中。
- * @param ctx MCU 调用上下文。
- * @param type MCU 类型定义。
- * @param value 要序列化的值。
- * @param buffer 可选的缓冲区。
- * @param offset 缓冲区中的偏移量。
- * @param addr 可选的内存地址。
- * @returns 写入的字节数。
+ * Serialize a value to memory or a buffer.
+ * @param ctx MCU call context.
+ * @param type MCU type definition.
+ * @param value Value to serialize.
+ * @param buffer Optional buffer.
+ * @param offset Offset within the buffer.
+ * @param addr Optional memory address.
+ * @returns Offset + size written if buffered; otherwise `0`.
  */
 export function serialize<T>(
     ctx: MCUContext,
@@ -377,15 +376,15 @@ export function serialize<T>(
     } else if (buffer !== undefined && offset !== undefined) {
         return type.toRegister(ctx, value, buffer, offset);
     }
-    throw new Error(`Target is unknown.`);
+    throw new Error(`Cannot serialize since either address nor buffer is provided.`);
 }
 
 /**
- * 根据地址与类型生成属性描述符。
- * @param ctx MCU 调用上下文。
- * @param addr 内存地址。
- * @param type 类型定义。
- * @returns 属性描述符。
+ * Create a property descriptor from an address and a type.
+ * @param ctx MCU call context.
+ * @param addr Memory address.
+ * @param type Type definition.
+ * @returns Property descriptor.
  */
 export function createVariable(ctx: MCUContext, addr: number, type: MCUTypeDef): PropertyDescriptor {
     return {
@@ -399,12 +398,17 @@ function defaultLazilyAccessorHandler<T>(ctx: MCUContext, address: number, type:
 }
 
 /**
- * 创建懒访问器。懒访问器会在懒访问时通过指定的函数获取代理对象，添加类型与地址标记，并自动缓存。
- * @param handler 获取代理对象的函数。
+ * Create a lazy accessor with automatic caching and memory management.
+ *
+ * The accessor maintains a cache scoped to each `MCUContext`.
+ * - **Lazy Initialization**: Invokes the handler only if the object at the specific address is not already cached.
+ * - **Weak Caching**: Uses `WeakRef` to store instances. If the object is garbage collected, it will be re-created on next access.
+ *
+ * @param handler - Factory function to create the accessor if it's missing from the cache.
  */
 export function createLazilyAccessor<T>(
     handler: (ctx: MCUContext, address: number, type: MCUTypeDef<T>) => T = defaultLazilyAccessorHandler,
-) {
+): MCUTypeDef<T>['lazilyAccess'] {
     const cache = new WeakMap<
         MCUContext,
         {
@@ -440,8 +444,13 @@ export function createLazilyAccessor<T>(
 }
 
 /**
- * 创建懒访问器。懒访问器会在懒访问时基于操作处理器创建代理对象，添加类型与地址标记，并自动缓存。
- * @param handlers 代理操作处理器。
+ * Create a lazy proxy accessor that dynamically intercepts property access.
+ *
+ * On first access, it constructs a `Proxy` object that delegates specific property
+ * operations (get/set) to the provided handlers, while keeping other properties
+ * on the base object. The resulting proxy is automatically cached (via `createLazilyAccessor`).
+ *
+ * @param handlers - Configuration object defining the base factory and property interception logic.
  */
 export function createLazilyProxyAccesser<T extends object>(handlers: {
     baseObjectFactory(ctx: MCUContext, address: number): T;
@@ -493,10 +502,10 @@ export function createLazilyProxyAccesser<T extends object>(handlers: {
 }
 
 /**
- * 标记对象为代理对象。
- * @param value 对象。
- * @param type 类型定义。
- * @param address 内存地址。
+ * Mark an object as a dynamic view.
+ * @param value Object.
+ * @param type Type definition.
+ * @param address Memory address.
  */
 export function markAsLazilyAccessObject<T>(value: T, type: MCUTypeDef<T>, address: number) {
     if ((typeof value === 'object' || typeof value === 'function') && value !== null) {
@@ -507,8 +516,8 @@ export function markAsLazilyAccessObject<T>(value: T, type: MCUTypeDef<T>, addre
 }
 
 /**
- * 判断对象是否为代理对象。
- * @param value 对象。
+ * Check whether an object is a dynamic view.
+ * @param value Object.
  */
 export function isLazilyAccessProxy<T>(value: T): value is LazilyAccessObject<T> {
     if ((typeof value === 'object' || typeof value === 'function') && value !== null) {
@@ -521,8 +530,8 @@ export function isLazilyAccessProxy<T>(value: T): value is LazilyAccessObject<T>
 }
 
 /**
- * 标记某个类型定义无法在定义时确定大小。可以显式设置 `type.size` 来指定其大小。
- * @param type 类型定义。
+ * Mark a type definition as having an undetermined size. Set `type.size` explicitly to specify it.
+ * @param type Type definition.
  */
 export function markAsIncompleteType<T extends MCUTypeDef>(type: T) {
     let definedSize: number | undefined;
@@ -543,9 +552,13 @@ export function markAsIncompleteType<T extends MCUTypeDef>(type: T) {
 }
 
 /**
- * 将代理对象转换为原始对象。对转换后的对象的读写不会影响内存中的对象。
- * @param ctx MCU 调用上下文。
- * @param value 代理对象。
+ * Take a snapshot of a dynamic view, converting it into a plain data object.
+ *
+ * Modifications to the snapshot do not affect memory.
+ *
+ * If the input is not a dynamic view, it is returned as-is.
+ * @param ctx MCU call context.
+ * @param value Dynamic view.
  */
 export function makeSnapshot<T>(ctx: MCUContext, value: T) {
     if (isLazilyAccessProxy(value)) {
@@ -560,8 +573,8 @@ export function makeSnapshot<T>(ctx: MCUContext, value: T) {
 
 const peripheralTypeMap = new WeakMap<MCUTypeDef, MCUTypeDef>();
 /**
- * 构造对应类型的外设类型。读写外设类型时，总会直接读写 MCU 内存，而非使用提前读取缓冲区。
- * @param type 类型定义。
+ * Construct the peripheral type for a given type that enforces direct memory access.
+ * @param type Type definition.
  */
 export function makePeripheral<T extends MCUTypeDef>(type: T) {
     let peripheralType = peripheralTypeMap.get(type) as T;
@@ -591,9 +604,9 @@ export function makeVariantType(size: number) {
 }
 
 /**
- * 构造数组类型。
- * @param type 数组元素的类型。
- * @param length 数组长度。
+ * Construct an array type.
+ * @param type Array element type.
+ * @param length Array length.
  */
 export function makeArray<T extends MCUTypeDef>(type: T, length: number) {
     const name = `${type.name}[${length}]`;
@@ -669,8 +682,8 @@ export function makeArray<T extends MCUTypeDef>(type: T, length: number) {
 }
 
 /**
- * 构造缓冲区类型。该类型不支持代理对象，修改完成后需要重新赋值。
- * @param size 缓冲区大小。
+ * Construct a buffer type. Buffers are returned as static copies instead of dynamic views.
+ * @param size Buffer size.
  */
 export function makeBuffer(size: number) {
     return mcuType(`_Buffer_(${size})`, size, {
@@ -690,9 +703,9 @@ export function makeBuffer(size: number) {
 }
 
 /**
- * 构造类型化数组类型。该类型不支持代理对象，修改完成后需要重新赋值。
- * @param ctor 类型化数组的构造函数。
- * @param length 类型化数组的长度。
+ * Construct a typed array type. TypeArrays are returned as static copies instead of dynamic views.
+ * @param ctor Typed array constructor.
+ * @param length Array length.
  */
 export function makeTypedArray<T extends { buffer: ArrayBuffer; byteLength: number; byteOffset: number }>(
     ctor: { new (buffer: ArrayBuffer): T; BYTES_PER_ELEMENT?: number },
@@ -716,10 +729,10 @@ export function makeTypedArray<T extends { buffer: ArrayBuffer; byteLength: numb
 }
 
 /**
- * 构造枚举类型。
- * @param name 枚举类型的名称。
- * @param baseType 枚举的基础类型。
- * @param enumDef 枚举定义对象。键为枚举名称，值为枚举值。
+ * Construct an enum type.
+ * @param name Enum type name.
+ * @param baseType Base type.
+ * @param enumDef Enum definition. Keys are enum names, values are enum values.
  */
 export function makeEnum<B extends MCUTypeDef, T extends { [key: string]: ToJsType<B> }>(
     name: string,
@@ -752,10 +765,10 @@ export function makeEnum<B extends MCUTypeDef, T extends { [key: string]: ToJsTy
 }
 
 /**
- * 构造标志类型。
- * @param name 标志类型的名称。
- * @param baseType 标志的基础类型。
- * @param flagDef 标志定义对象。键为标志名称，值为标志值。
+ * Construct a flags type.
+ * @param name Flags type name.
+ * @param baseType Base type.
+ * @param flagDef Flags definition. Keys are flag names, values are flag values.
  */
 export function makeFlags<B extends MCUTypeDef<number>, T extends { [key: string]: ToJsType<B> }>(
     name: string,
@@ -816,10 +829,10 @@ export type StructDefToTypeMap<T extends Record<string, MCUTypeDef | [type: MCUT
 };
 
 /**
- * 构造结构体类型。
- * @param name 结构体类型的名称。
- * @param structDef 结构体定义对象。键为字段名称，值为字段类型或类型与偏移量的元组。
- * @param align 可选的对齐方式。默认为字段自身的对齐方式。
+ * Construct a struct type.
+ * @param name Struct type name.
+ * @param structDef Struct definition. Keys are field names, values are field types or `[type, offset]` tuples.
+ * @param align Optional alignment. Defaults to the field's own alignment.
  */
 export function makeStructure<T extends Record<string, MCUTypeDef | [type: MCUTypeDef, offset?: number]>>(
     name: string,
@@ -897,9 +910,9 @@ export function makeStructure<T extends Record<string, MCUTypeDef | [type: MCUTy
 }
 
 /**
- * 构造联合类型。
- * @param name 联合类型的名称。
- * @param unionDef 联合类型定义对象。键为成员名称，值为成员类型。
+ * Construct a union type.
+ * @param name Union type name.
+ * @param unionDef Union definition. Keys are member names, values are member types.
  */
 export function makeUnion<T extends Record<string, MCUTypeDef>>(name: string, unionDef: T) {
     const def = { ...unionDef };
@@ -951,14 +964,14 @@ export function makeUnion<T extends Record<string, MCUTypeDef>>(name: string, un
 }
 
 /**
- * 输入引用类型。
+ * Input reference type.
  */
 export type InRef<T> = T | null | undefined;
 
 /**
- * 构造输入引用类型。
- * @param pointerType 指针的基础类型。
- * @param type 引用的目标类型。
+ * Construct an input reference type.
+ * @param pointerType Underlying primitive type of the pointer.
+ * @param type Referent type.
  */
 export function makeInReference<T extends MCUTypeDef>(pointerType: MCUTypeDef<number>, type: T) {
     const name = `${type.name}*`;
@@ -999,14 +1012,14 @@ export function makeInReference<T extends MCUTypeDef>(pointerType: MCUTypeDef<nu
 }
 
 /**
- * 输出引用类型。
+ * Output reference type.
  */
 export type OutRef<T> = [T?];
 
 /**
- * 构造输出引用类型。
- * @param pointerType 指针的基础类型。
- * @param type 引用的目标类型。
+ * Construct an output reference type.
+ * @param pointerType Underlying primitive type of the pointer.
+ * @param type Referent type.
  */
 export function makeOutReference<T extends MCUTypeDef>(pointerType: MCUTypeDef<number>, type: T) {
     const name = `_Out_ ${type.name}*`;
@@ -1035,14 +1048,14 @@ export function makeOutReference<T extends MCUTypeDef>(pointerType: MCUTypeDef<n
 }
 
 /**
- * 输入输出引用类型。
+ * Input/output reference type.
  */
 export type InoutRef<T> = [T];
 
 /**
- * 构造输入输出引用类型。
- * @param pointerType 指针的基础类型。
- * @param type 引用的目标类型。
+ * Construct an input/output reference type.
+ * @param pointerType Underlying primitive type of the pointer.
+ * @param type Referent type.
  */
 export function makeInoutReference<T extends MCUTypeDef>(pointerType: MCUTypeDef<number>, type: T) {
     const name = `_Inout_ ${type.name}*`;
@@ -1072,7 +1085,7 @@ export function makeInoutReference<T extends MCUTypeDef>(pointerType: MCUTypeDef
 }
 
 /**
- * 引用类型构造器。
+ * Reference type constructor.
  */
 export type ReferenceType = {
     <T extends MCUTypeDef>(type: T): MCUTypeDef<InRef<ToJsType<T>>>;
@@ -1082,8 +1095,8 @@ export type ReferenceType = {
 };
 
 /**
- * 构造引用类型构造器。
- * @param pointerType 指针的基础类型。
+ * Construct a reference type constructor.
+ * @param pointerType Underlying primitive type of the pointer.
  */
 export function makeReferenceType(pointerType: MCUTypeDef<number>) {
     const ref: ReferenceType = <T extends MCUTypeDef>(type: T) => makeInReference(pointerType, type);
@@ -1094,7 +1107,7 @@ export function makeReferenceType(pointerType: MCUTypeDef<number>) {
 }
 
 /**
- * 指针类型。
+ * Pointer type.
  */
 export interface MCUPointer<T extends MCUTypeDef = MCUTypeDef> {
     address: number;
@@ -1103,9 +1116,9 @@ export interface MCUPointer<T extends MCUTypeDef = MCUTypeDef> {
 }
 
 /**
- * 构造指针类型。
- * @param pointerType 指针的基础类型。
- * @param type 指针指向的目标类型。
+ * Construct a pointer type.
+ * @param pointerType Underlying primitive type of the pointer.
+ * @param type Target type the pointer points to.
  */
 export function makePointer<T extends MCUTypeDef>(pointerType: MCUTypeDef<number>, type: T) {
     const name = `_Pointer_ ${type.name}*`;
@@ -1155,15 +1168,15 @@ export function makePointer<T extends MCUTypeDef>(pointerType: MCUTypeDef<number
 }
 
 /**
- * 构造指针类型构造器。
- * @param pointerType 指针的基础类型。
+ * Construct a pointer type constructor.
+ * @param pointerType Underlying primitive type of the pointer.
  */
 export function makePointerType(pointerType: MCUTypeDef<number>) {
     return <T extends MCUTypeDef>(type: T) => makePointer(pointerType, type);
 }
 
 /**
- * 表示一段内存区域。
+ * A typed view over a region of MCU memory with bounds checking.
  */
 export class MCUSpan {
     #type: MCUTypeDef<MCUSpan> | undefined;
@@ -1216,9 +1229,9 @@ export class MCUSpan {
     }
 
     /**
-     * 获取当前内存区域的子区域。
-     * @param start 起始位置。
-     * @param end 结束位置。默认为区域末尾。
+     * Get a sub-region of the memory region.
+     * @param start Start position.
+     * @param end End position. Defaults to the end of the region.
      */
     slice(start: number, end?: number) {
         if (!this.checkValidIndex(start, true)) {
@@ -1236,9 +1249,9 @@ export class MCUSpan {
     }
 
     /**
-     * 将当前内存区域强制转换成指定类型的代理对象。
-     * @param type 指定类型。
-     * @param offset 偏移量。
+     * Cast the memory region to a dynamic view of the specified type.
+     * @param type Target type.
+     * @param offset Offset.
      */
     cast<T>(type: MCUTypeDef<T>, offset: number = 0): T {
         if (offset !== undefined && !this.checkValidIndex(offset)) {
@@ -1254,9 +1267,9 @@ export class MCUSpan {
     }
 
     /**
-     * 将当前内存区域强制转换成指定类型的函数。
-     * @param def 指定类型。
-     * @param offset 偏移量。
+     * Cast the memory region to a function of the specified type.
+     * @param def Function definition.
+     * @param offset Offset.
      */
     bind<F extends (...args: never[]) => unknown>(def: MCUFunctionDef<F>, offset: number = 0): ToAsyncFunction<F> {
         if (offset !== undefined && !this.checkValidIndex(offset)) {
@@ -1266,9 +1279,9 @@ export class MCUSpan {
     }
 
     /**
-     * 读取当前内存区域中的数据，并反序列化为指定类型。
-     * @param type 数据类型。
-     * @param offset 偏移量。
+     * Read and deserialize data from the memory region.
+     * @param type Data type.
+     * @param offset Offset.
      */
     read<T extends MCUTypeDef>(type: T, offset: number = 0): ToJsType<T> {
         if (offset !== undefined && !this.checkValidIndex(offset)) {
@@ -1284,10 +1297,10 @@ export class MCUSpan {
     }
 
     /**
-     * 将指定数据序列化后写入当前内存区域。
-     * @param type 数据类型。
-     * @param value 数据值。
-     * @param offset 偏移量。
+     * Serialize and write data to the memory region.
+     * @param type Data type.
+     * @param value Data value.
+     * @param offset Offset.
      */
     write<T extends MCUTypeDef>(type: T, value: ToJsType<T>, offset: number = 0) {
         if (offset !== undefined && !this.checkValidIndex(offset)) {
@@ -1303,9 +1316,9 @@ export class MCUSpan {
     }
 
     /**
-     * 创建当前内存区域中的数据引用。
-     * @param type 数据类型。
-     * @param offset 偏移量。
+     * Create a data reference within the memory region.
+     * @param type Data type.
+     * @param offset Offset.
      */
     referenceOf<T extends MCUTypeDef>(type: T, offset: number = 0): MCUReference<T> {
         if (offset !== undefined && !this.checkValidIndex(offset)) {
@@ -1321,11 +1334,11 @@ export class MCUSpan {
     }
 
     /**
-     * 将当前内存区域的数据复制到目标内存区域。
-     * @param target 目标内存区域。
-     * @param targetStart 目标内存区域的起始位置。默认为0。
-     * @param sourceStart 当前内存区域的起始位置。默认为0。
-     * @param sourceEnd 当前内存区域的结束位置。默认为区域末尾。
+     * Copy data from the memory region to a target memory region.
+     * @param target Target memory region.
+     * @param targetStart Start position in target. Defaults to 0.
+     * @param sourceStart Start position in source. Defaults to 0.
+     * @param sourceEnd End position in source. Defaults to the end of the region.
      */
     copyTo(target: MCUSpan, targetStart?: number, sourceStart?: number, sourceEnd?: number) {
         if (targetStart !== undefined && !target.checkValidIndex(targetStart, true)) {
@@ -1364,9 +1377,10 @@ export class MCUSpan {
     }
 
     /**
-     * 将当前内存区域中的数据复制到新分配缓冲区并返回。
-     * @param start 内存区域的起始位置。默认为0。
-     * @param end 内存区域的结束位置。默认为区域末尾。
+     * Read data from the memory region and returns it as a new Buffer.
+     * @param start Start position. Defaults to 0.
+     * @param end End position. Defaults to the end of the region.
+     * @returns A buffer containing the copied data.
      */
     readBuffer(start?: number, end?: number) {
         if (start !== undefined && !this.checkValidIndex(start)) {
@@ -1388,11 +1402,11 @@ export class MCUSpan {
     }
 
     /**
-     * 将当前内存区域中的数据复制到本地缓冲区。
-     * @param target 本地缓冲区。
-     * @param targetStart 目标缓冲区的起始位置。默认为0。
-     * @param sourceStart 源内存区域的起始位置。默认为0。
-     * @param sourceEnd 源内存区域的结束位置。默认为区域末尾。
+     * Copy data from the memory region to a given target buffer.
+     * @param target Target buffer.
+     * @param targetStart Start position in target buffer. Defaults to 0.
+     * @param sourceStart Start position in source memory. Defaults to 0.
+     * @param sourceEnd End position in source memory. Defaults to the end of the region.
      */
     readIntoBuffer(target: Buffer, targetStart?: number, sourceStart?: number, sourceEnd?: number) {
         if (targetStart !== undefined && targetStart > target.length) {
@@ -1425,11 +1439,11 @@ export class MCUSpan {
     }
 
     /**
-     * 将本地缓冲区的数据写入当前内存区域。
-     * @param source 本地缓冲区。
-     * @param sourceStart 源缓冲区的起始位置。默认为0。
-     * @param targetStart 目标内存区域的起始位置。默认为0。
-     * @param targetEnd 目标内存区域的结束位置。默认为区域末尾。
+     * Write data from a source buffer to the memory region.
+     * @param source Source buffer.
+     * @param sourceStart Start position in source buffer. Defaults to 0.
+     * @param targetStart Start position in target memory. Defaults to 0.
+     * @param targetEnd End position in target memory. Defaults to the end of the region.
      */
     writeBuffer(source: Buffer, sourceStart?: number, targetStart?: number, targetEnd?: number) {
         if (sourceStart !== undefined && sourceStart > source.length) {
@@ -1463,8 +1477,8 @@ export class MCUSpan {
 
 let infiniteSpanType: MCUTypeDef<MCUSpan> | undefined;
 /**
- * 构造内存区域类型。
- * @param size 内存区域的大小。若未指定则表示无限大小。
+ * Construct a memory region type.
+ * @param size Region size. Omit for infinite size.
  */
 export function makeSpan(size?: number) {
     if (size !== undefined) {
@@ -1495,21 +1509,19 @@ export function makeSpan(size?: number) {
 }
 
 /**
- * 将函数类型转换为异步函数类型。
+ * Convert a function type to an async function type.
  */
 export type ToAsyncFunction<F extends (...args: never[]) => unknown> = (
     ...args: Parameters<F>
 ) => Promise<Awaited<ReturnType<F>>>;
 
 /**
- * MCUFunctionDef 接口标签。存储对应的 JavaScript 函数签名。
- *
- * 该符号只有类型信息，实际上该导出变量并不存在。
+ * MCUFunctionDef interface tag. Stores the corresponding JavaScript function signature.
  */
 export declare const signatureTag: unique symbol;
 
 /**
- * 函数定义。描述函数的参数和返回值类型。
+ * Function definition. Describes parameter and return value types.
  */
 export type MCUFunctionDef<F extends (...args: never[]) => unknown = (...args: never[]) => unknown> = {
     [signatureTag]: F;
@@ -1517,12 +1529,12 @@ export type MCUFunctionDef<F extends (...args: never[]) => unknown = (...args: n
 };
 
 /**
- * 函数定义对应的 JavaScript 表示。
+ * JavaScript representation of a function definition.
  */
 export type ToJsFunction<T extends MCUFunctionDef> = ToAsyncFunction<T[typeof signatureTag]>;
 
 /**
- * 函数或类型定义对应的 JavaScript 表示。
+ * JavaScript representation of a function or type definition.
  */
 export type ToJs<T extends MCUTypeDef | MCUFunctionDef> = T extends MCUTypeDef
     ? ToJsType<T>
@@ -1538,7 +1550,7 @@ export type InferParametersFromType<T extends MCUTypeDef[]> = {
 };
 
 /**
- * 函数工厂。
+ * Function factory.
  */
 export type CallFactory = {
     <R extends MCUTypeDef, P extends MCUTypeDef[]>(
@@ -1552,19 +1564,19 @@ export type CallFactory = {
 };
 
 /**
- * 详见 {@link makeCallConvention}。
+ * See {@link makeCallConvention}.
  */
 export type CallFactoryCleanUp<F extends (...args: never[]) => unknown> = (
     error?: null | Error,
 ) => Promisable<ReturnType<F>>;
 /**
- * 详见 {@link makeCallConvention}。
+ * See {@link makeCallConvention}.
  */
 export type CallFactoryPrepare<F extends (...args: never[]) => unknown> = (
     ...args: Parameters<F>
 ) => Promisable<CallFactoryCleanUp<F>>;
 /**
- * 详见 {@link makeCallConvention}。
+ * See {@link makeCallConvention}.
  */
 export type CallFactoryInitialize = <F extends (...args: never[]) => unknown>(
     ctx: MCUContext,
@@ -1575,14 +1587,15 @@ export type CallFactoryInitialize = <F extends (...args: never[]) => unknown>(
 ) => CallFactoryPrepare<F>;
 
 /**
- * 创建调用约定。
+ * Define a calling convention for function invocation.
  *
- * - {@link CallFactoryInitialize} 初始化堆栈结构。在定义函数时被调用。
- * - {@link CallFactoryPrepare} 用给定参数填充给寄存器与堆栈。在调用函数时被调用。
- * - {@link CallFactoryCleanUp} 恢复寄存器与堆栈，获取返回值（如果成功）。在函数调用结束或出错后被调用。
+ * The lifecycle of a call proceeds in three stages:
+ * 1. {@link CallFactoryInitialize} initializes stack layout. Called when defining a function.
+ * 2. {@link CallFactoryPrepare} fills registers and stack with arguments. Called when invoking a function.
+ * 3. {@link CallFactoryCleanUp} restores registers and stack, retrieves return value. Called after completion or error.
  *
- * @param initialize 调用约定初始化函数。
- * @returns 函数工厂。
+ * @param initialize `CallFactoryInitialize` function.
+ * @returns Function factory.
  */
 export function makeCallConvention(initialize: CallFactoryInitialize): CallFactory {
     return <F extends (...args: never[]) => unknown>(
@@ -1632,13 +1645,14 @@ export function makeCallConvention(initialize: CallFactoryInitialize): CallFacto
 }
 
 /**
- * 创建复合调用约定。
+ * Create a composite call convention.
  *
- * 复合调用约定适用于返回类型为大于 4 字节的复合类型的情形。函数被调用时会修改第一个参数指向的内存，从而实现返回复合类型。
+ * Used when the return type is a composite type larger than 4 bytes.
+ * The function modifies memory pointed to by the first argument to return the value.
  *
- * @param factory 原始函数工厂。
- * @param outRefType 输出引用类型。
- * @returns 函数工厂。
+ * @param factory Original function factory.
+ * @param outRefType Output reference type.
+ * @returns Function factory.
  */
 export function makeCompositeCall(
     factory: CallFactory,
@@ -1669,9 +1683,9 @@ export function makeCompositeCall(
 }
 
 /**
- * 构造函数类型。
- * @param name 函数类型的名称。
- * @param def 函数定义。
+ * Construct a function type.
+ * @param name Function type name.
+ * @param def Function definition.
  */
 export function makeFunctionType<F extends MCUFunctionDef>(name: string, def: F) {
     const type = mcuType(name, 0, {
@@ -1687,45 +1701,45 @@ export function makeFunctionType<F extends MCUFunctionDef>(name: string, def: F)
 }
 
 /**
- * 堆内存分配。需要手动调用 `free()` 或使用 `using` 语法释放。
+ * Heap allocation handle. Requires manual `free()` or `using` syntax.
  */
 export interface MCUAllocation extends Disposable {
     /**
-     * 内存地址。
+     * Memory address.
      */
     readonly address: number;
     /**
-     * 内存大小。
+     * Memory size.
      */
     readonly size: number;
     /**
-     * 内存对齐方式。
+     * Memory alignment.
      */
     readonly align?: number;
     /**
-     * 释放内存。
+     * Free the memory.
      */
     free(): void;
 }
 
 /**
- * 栈内存分配。会在函数返回时自动释放。
+ * Stack allocation handle. Automatically freed when function returns.
  */
 export interface MCUAutoAllocation {
     /**
-     * 内存地址。
+     * Memory address.
      */
     readonly address: number;
     /**
-     * 内存大小。
+     * Memory size.
      */
     readonly size: number;
     /**
-     * 内存对齐方式。
+     * Memory alignment.
      */
     readonly align?: number;
     /**
-     * 终结器。在释放时自动调用。
+     * Finalizer. Called automatically when freed.
      */
     finalize?: () => void;
 }
@@ -1735,50 +1749,51 @@ export interface MCUFinalizer {
 }
 
 /**
- * 内存分配器。
+ * Memory allocator.
  */
 export interface MCUAllocator {
     /**
-     * 尝试从栈中分配内存。未持有栈控制权或栈中没有足够大的空间时会返回 `null`。
+     * Allocate memory from the stack.
      *
-     * @param ctx 调用上下文。
-     * @param size 待分配内存的大小。
-     * @param align 待分配内存的对齐方式。
-     * @returns 栈内存分配。
+     * @param ctx Call context.
+     * @param size Allocation size.
+     * @param align Alignment.
+     * @returns A new stack allocation handle, or `null` if allocation failed.
      */
     allocateAuto(ctx: MCUContext, size: number, align?: number): MCUAutoAllocation | null;
 
     /**
-     * 尝试从堆中分配内存。未持有堆控制权或堆中没有足够大的空间时会返回 `null`。
+     * Allocate memory from the heap. Returns `null` without heap control or insufficient space.
      *
-     * @param ctx 调用上下文。
-     * @param size 待分配内存的大小。
-     * @param align 待分配内存的对齐方式。
-     * @returns 堆内存分配。
+     * @param ctx Call context.
+     * @param size Allocation size.
+     * @param align Alignment.
+     * @returns Heap allocation handle.
      */
     allocate(ctx: MCUContext, size: number, align?: number): MCUAllocation | null;
 
     /**
-     * 授予栈控制权，同时提供修改栈指针的方式。返回回收器。
+     * Grant control over the stack memory via a user-supplied pointer modification method.
      *
-     * 调用该回收器会导致栈控制权被回收，并返回终结器。调用回收器后从栈中分配内存的尝试将失败。但已分配的内存仍能使用。
+     * This method returns a **Reclaimer** function. The lifecycle proceeds in two stages:
+     * 1. **Revoke:** Calling the Reclaimer revokes stack control and returns a **Finalizer**.
+     *    - After this point, further stack allocations will fail.
+     *    - Existing allocations remain valid.
+     * 2. **Finalize:** Calling the Finalizer frees all stack-allocated memory.
      *
-     * 调用该终结器会导致所有从栈中分配的内存被释放。
-     *
-     * @param ctx 调用上下文。
-     * @param commit
-     * 栈指针的修改函数。
-     * 提供 size 和 align 参数请求分配，返回分配区域的起始地址。如果不提供参数，则返回当前栈指针。
-     * 如果栈无效或无法分配足够的内存，返回 `null`。
+     * @param commit - A callback function used to modify the stack pointer.
+     *   - To **allocate**: Pass `size` and `align`. Returns the starting address, or `null` if allocation failed.
+     *   - To **inspect**: Omit arguments to retrieve the current stack pointer.
+     * @returns A Reclaimer function that, when invoked, returns the Finalizer.
      */
     stackAccess(ctx: MCUContext, commit: (size?: number, align?: number) => number | null): () => MCUFinalizer;
 
     /**
-     * 授予堆控制权。堆控制权不能被回收。
+     * Grant heap control. Heap control cannot be reclaimed.
      *
-     * @param ctx 调用上下文。
-     * @param heapBase 堆内存的起始地址。
-     * @param heapLimit 堆内存的结束地址。默认为无限大。
+     * @param ctx Call context.
+     * @param heapBase Heap starting address.
+     * @param heapLimit Heap ending address. Defaults to infinity.
      */
     heapAccess(ctx: MCUContext, heapBase: number, heapLimit?: number): void;
 }
@@ -1917,11 +1932,11 @@ function offsetAddressMap(symbolAddresses: SymbolAddresses, memoryOffset: number
 }
 
 /**
- * 将地址格式化为符号名与偏移的形式。
- * @param symbolAddresses 符号表。
- * @param address 地址。
- * @param searchUpperBound 搜索范围上限。
- * @param searchLowerBound 搜索范围下限。
+ * Formats an address as a symbol name with offset.
+ * @param symbolAddresses Symbol table.
+ * @param address Address.
+ * @param searchUpperBound Search range upper bound.
+ * @param searchLowerBound Search range lower bound.
  */
 export function addressToString(
     symbolAddresses: SymbolAddresses,
@@ -1945,13 +1960,17 @@ export function addressToString(
 }
 
 /**
- * 符号树。可用于访问层级结构的符号与子符号。
+ * Structured representations of named locations in MCU memory that carry complete type and structural information.
+ * They allow you to navigate complex nested data structures in a type-safe manner.
  */
 export type MCUSymbol<T extends MCUTypeDef = MCUTypeDef> = {
     [NativeType]: T;
     [MemoryAddress]: number;
 } & MCUSymbolMap<T['symbols']>;
 
+/**
+ * Symbol tree. Can be used to access symbols and sub-symbols in a hierarchical structure.
+ */
 export type MCUSymbolMap<T extends SymbolDefintions = SymbolDefintions> = {
     readonly [K in keyof T]: MCUSymbol<Exclude<T[K], undefined>['type']>;
 };
@@ -2008,7 +2027,8 @@ export function createSymbol<T extends MCUTypeDef>(ctx: MCUContext, address: num
 }
 
 /**
- * 引用。允许对不支持代理对象的类型提供对内存的响应式操作。
+ * Direct manipulation interfaces to specific memory addresses.
+ * They provide immediate read/write access and can be assigned to pointer-type variables.
  */
 export interface MCUReference<T extends MCUTypeDef> {
     readonly [NativeType]: T;
@@ -2054,7 +2074,9 @@ export function createReference<T extends MCUTypeDef, B = object>(
 }
 
 /**
- * 地址表示。可以是符号名称或地址数值。
+ * Represents a symbolic or numeric address.
+ *
+ * A value that acts as a memory reference, either as a symbol name or a raw numeric address.
  */
 export type AddressLike<Definitions extends Record<string, unknown> = EmptyKeyObject> = LiteralUnion<
     keyof Definitions,
@@ -2062,17 +2084,23 @@ export type AddressLike<Definitions extends Record<string, unknown> = EmptyKeyOb
 >;
 
 /**
- * 可寻址对象。可以获取该对象在内存中的地址。
+ * Represents an addressable entity.
+ *
+ * An object possessing a valid memory address that can be retrieved via specific accessors or context methods.
  */
 export type Addressable = MCUSymbol | MCUReference<MCUTypeDef> | MCUSpan | LazilyAccessObject | Record<never, never>;
 
 /**
- * 类型限定对象。可以获取该对象的类型定义。
+ * Represents a typed value.
+ *
+ * An object that holds a value with a specific type definition, enabling type-safe operations.
  */
 export type TypedValue<T extends MCUTypeDef> = MCUSymbol<T> | MCUReference<T>;
 
 /**
- * 类型限定可寻址对象。可以获取该对象的地址与类型定义。
+ * Represents a typed addressable entity.
+ *
+ * An intersection of {@link TypedValue} and {@link Addressable}. It combines a specific type definition with a retrievable memory address.
  */
 export type TypedAddressable<T extends MCUTypeDef> = MCUSymbol<T> | MCUReference<T>;
 
@@ -2081,59 +2109,70 @@ export type AppendDefinition<Definitions extends Record<string, unknown>> = {
 } & { [K in keyof MCUCall<Definitions>]?: never };
 
 /**
- * MCU 调用实例。
+ * MCU call instance.
  */
 export type MCUCall<
     Definitions extends Record<string, unknown> = EmptyKeyObject,
     Symbols extends Record<string, unknown> = EmptyKeyObject,
 > = {
     /**
-     * 定义变量或函数。定义时会在符号表中搜索指定的符号，并获取其地址。定义后可通过该地址在 MCU 调用实例中对其进行操作。
+     * Define a variable or function.
      *
-     * @param def 符号名与类型组成的键值对。
+     * Searches the symbol table for the address, then exposes the symbol on the instance.
+     *
+     * @param def Symbol name and type pairs.
      */
     define<T extends AppendDefinition<Definitions>>(
         def: T,
     ): MCUCall<Definitions & { [k in keyof T]: ToJs<T[k]> }, Symbols & { [k in keyof T]: ToSymbol<T[k]> }>;
 
     /**
-     * 获取数值形式的地址。
+     * Resolve a memory address.
      *
-     * @param symbol 地址、符号名或可寻址对象。
+     * Converts various address representations into a raw numeric pointer.
+     *
+     * @param symbol The target to resolve (address, symbol, or {@link Addressable}).
      */
     addressOf(symbol: AddressLike<Definitions> | Addressable): number;
 
     /**
-     * 获取类型定义。
+     * Retrieve the type definition.
      *
-     * @param symbol 类型限定对象。
+     * Extracts the specific type metadata associated with a typed value.
+     *
+     * @param symbol The {@link TypedValue} to inspect.
      */
     typeOf<T extends MCUTypeDef>(symbol: TypedValue<T>): T;
 
     /**
-     * 获取类型大小。
+     * Retrieve the type definition size.
      *
-     * @param symbol 类型限定对象。
+     * A convenience accessor that returns the `size` property of the type definition associated with the symbol.
+     *
+     * @param symbol Typed value.
      */
-    sizeOf<T extends MCUTypeDef>(symbol: TypedValue<T>): number;
+    sizeOf<T extends MCUTypeDef>(symbol: TypedValue<T>): T['size'];
 
     /**
-     * 尝试在堆中为指定类型分配内存，并返回内存分配与引用。
-     * @param type 类型定义。
+     * Allocate heap memory.
+     *
+     * @param type Type definition.
      */
     'new'<T extends MCUTypeDef>(type: T): MCUAllocation & MCUReference<T>;
 
     /**
-     * 强制将指定地址的对象读取为另一种类型的代理对象。
-     * @param symbolOrAddress 地址、符号名或可寻址对象。
-     * @param type 类型定义。
+     * Reinterprets the data at a specific address as a dynamic view.
+     *
+     * @param symbolOrAddress The target location (address, symbol, or {@link Addressable}).
+     * @param type The target type definition to cast to.
      */
     cast<T>(symbolOrAddress: AddressLike<Definitions> | Addressable, type: MCUTypeDef<T>): T;
 
     /**
-     * 强制将指定地址的对象读取为函数。
-     * @param symbolOrAddress 地址、符号名或可寻址对象。
-     * @param def 函数定义。
+     * Reinterprets the data at a specific address as a function, allowing the raw code at that location to be invoked as a callable function.
+     *
+     * @param symbolOrAddress The target location (address, symbol, or {@link Addressable}).
+     * @param def The target function definition to bind to.
      */
     bind<F extends (...args: never[]) => unknown>(
         symbolOrAddress: AddressLike<Definitions> | Addressable,
@@ -2141,17 +2180,19 @@ export type MCUCall<
     ): ToAsyncFunction<F>;
 
     /**
-     * 读取指定地址处的数据，并反序列化为指定类型。
-     * @param symbolOrAddress 地址、符号名或可寻址对象。
-     * @param type 数据类型。
+     * Retrieves the value at a specific address.
+     *
+     * @param symbolOrAddress The target location (address, symbol, or {@link Addressable}).
+     * @param type The type definition to read the data.
      */
     read<T extends MCUTypeDef>(symbolOrAddress: AddressLike<Definitions> | Addressable, type: T): ToJsType<T>;
 
     /**
-     * 将指定数据序列化后写入指定地址。
-     * @param symbolOrAddress 地址、符号名或可寻址对象。
-     * @param type 数据类型。
-     * @param value 数据。
+     * Assigns a JavaScript value to a specific address.
+     *
+     * @param symbolOrAddress The target location (address, symbol, or {@link Addressable}).
+     * @param type The type definition to write the data.
+     * @param value The JavaScript value to write.
      */
     write<T extends MCUTypeDef>(
         symbolOrAddress: AddressLike<Definitions> | Addressable,
@@ -2160,17 +2201,19 @@ export type MCUCall<
     ): void;
 
     /**
-     * 根据地址与类型创建符号。
-     * @param symbolOrAddress 地址、符号名或可寻址对象。
-     * @param type 数据类型。
+     * Generates a symbol instance associating a specific address with a type definition.
+     *
+     * @param symbolOrAddress The target location (address, symbol, or {@link Addressable}).
+     * @param type The type definition to associate (optional if inferred from input).
      */
     symbolOf<T extends MCUTypeDef>(symbolOrAddress: AddressLike<Definitions> | Addressable, type: T): MCUSymbol<T>;
     symbolOf<T extends MCUTypeDef>(symbolOrAddress: TypedAddressable<T>, type?: T): MCUSymbol<T>;
 
     /**
-     * 根据地址与类型创建引用。
-     * @param symbolOrAddress 地址、符号名或可寻址对象。
-     * @param type 数据类型。
+     * Generates a reference instance pointing to a specific address with an associated type definition.
+     *
+     * @param symbolOrAddress The target location (address, symbol, or {@link Addressable}).
+     * @param type The type definition to associate (optional if inferred from input).
      */
     referenceOf<T extends MCUTypeDef>(
         symbolOrAddress: AddressLike<Definitions> | Addressable,
@@ -2179,34 +2222,39 @@ export type MCUCall<
     referenceOf<T extends MCUTypeDef>(symbolOrAddress: TypedAddressable<T>, type?: T): MCUReference<T>;
 
     /**
-     * 创建内存区域对象。
-     * @param symbolOrAddress 地址、符号名或可寻址对象。
-     * @param size 区域大小。如果未指定则默认使用 symbolOrAddress 的类型大小（如有）或无限大小。
+     * Create a {@link MCUSpan} starting at the given address.
+     *
+     * @param symbolOrAddress The starting location (address, symbol, or {@link Addressable}).
+     * @param size The size of the region in bytes. If omitted, defaults to the size of the symbol's type or infinite.
      */
     spanOf(symbolOrAddress: AddressLike<Definitions> | Addressable, size?: number): MCUSpan;
 
     /**
-     * 将代理对象转换为原始对象。对转换后的对象的读写不会影响内存中的对象。
-     * @param value 代理对象。
+     * Converts a dynamic view into a plain JavaScript object.
+     *
+     * Unlike the live view, modifications to the returned object do not affect the underlying MCU memory.
+     * @param value Dynamic view.
      */
     snapshot<T>(value: T): T;
 
     /**
-     * 创建输入引用对象。
-     * @param value 引用对象。
+     * Wraps a value in a reference container.
+     *
+     * @param value Reference object.
      */
     ref<T>(value: T): InoutRef<T>;
 
     /**
-     * 创建输出引用对象。
+     * Creates an empty reference container.
      */
     ref<T>(): OutRef<T>;
 
     /**
-     * 将地址格式化为符号名与偏移的形式。
-     * @param symbolOrAddress 地址、符号名或可寻址对象。
-     * @param searchUpperBound 搜索范围上限。
-     * @param searchLowerBound 搜索范围下限。
+     * Formats a memory address as a human-readable string containing the nearest symbol name and the offset (e.g., `SymbolName + 0x10`).
+     *
+     * @param symbolOrAddress The target location (address, symbol, or {@link Addressable}).
+     * @param searchUpperBound The upper bound of the search range.
+     * @param searchLowerBound The lower bound of the search range.
      */
     locate(
         symbolOrAddress: AddressLike<Definitions> | Addressable,
@@ -2215,17 +2263,17 @@ export type MCUCall<
     ): string;
 
     /**
-     * MCU 调用上下文。
+     * MCU call context.
      */
     context: MCUContext;
 
     /**
-     * 符号表。
+     * Symbol table.
      */
     symbols: Symbols;
 
     /**
-     * 符号名列表。
+     * List of symbol names.
      */
     symbolNames: string[];
 } & {
@@ -2234,56 +2282,72 @@ export type MCUCall<
 
 export interface MCUCallOptions {
     /**
-     * 内存偏移量。查找符号时对应的符号会加上相应的偏移。
+     * Base memory offset.
+     *
+     * An offset value added to all symbol addresses during lookup, allowing for adjustments to the memory map.
      */
     memoryOffset?: number;
 
     /**
-     * 断点代码位于内存中的地址或符号名。当 MCU 执行到断点时，MCU 会进入暂停状态。
+     * Breakpoint location.
      *
-     * 默认为 `BKPT_FUNCTION` 符号。如果未找到，调用工厂会在调用函数前在栈中添加断点代码，在函数返回后恢复。
+     * The address or symbol where the MCU should halt execution. Defaults to `BKPT_FUNCTION`.
      *
-     * 如果 MCU 不支持执行栈中的代码，则需要手动指定断点代码的位置。
+     * If the default is not found, the factory injects breakpoint code onto the stack and restores it upon return. You must specify this manually if the MCU does not support stack execution.
      */
     breakpoint?: number | string;
 
     /**
-     * 堆内存起始地址或符号名。
+     * Heap base address.
      *
-     * 默认为 `HEAP_BASE` 符号。
+     * The starting address or symbol for the heap memory region. Defaults to `HEAP_BASE`.
      */
     heap?: number | string;
 
     /**
-     * 堆内存最大地址或符号名。
+     * Heap limit address.
      *
-     * 默认为 `HEAP_LIMIT` 符号。
+     * The ending address or symbol for the heap memory region. Defaults to `HEAP_LIMIT`.
+     *
+     * Note: `heapSize` takes precedence over this option if both are specified.
      */
     heapLimit?: number | string;
 
     /**
-     * 堆内存大小。默认为 `Infinity`。
+     * Heap memory size.
+     *
+     * The total size of the heap region. Defaults to `Infinity`.
+     *
+     * Note: This option takes precedence over `heapLimit`.
      */
     heapSize?: number;
 
     /**
-     * 自定义内存分配器。可以继承 {@link DefaultAllocator} 实现自定义逻辑。
+     * Custom memory allocator.
+     *
+     * A custom implementation for memory management. While you can implement the interface from scratch,
+     * extending {@link DefaultAllocator} is recommended for standard behavior.
      */
     allocator?: MCUAllocator;
 
     /**
-     * 调用超时时间，单位为毫秒。函数调用超过该时间后仍未返回时，调用将抛出异常。
+     * Execution timeout.
      *
-     * 默认为 `Infinity`。
+     * The maximum time in milliseconds allowed for a function call. An error is thrown if execution exceeds this limit.
+     *
+     * Defaults to `Infinity`.
      */
     callTimeout?: number;
 }
 
 /**
- * 创建 MCU 调用实例。
- * @param link JLink 等 MCU 底层实例。
- * @param symbolSource ELF 文件路径，内容或符号表。
- * @param options MCU 调用选项。
+ * Initialize a {@link MCUCall} instance.
+ *
+ * Sets up the environment for calling MCU functions, linking the low-level hardware connection with symbol definitions and configuration options.
+ *
+ * @param link The low-level hardware link instance (e.g., JLink).
+ * @param symbolSource The source for symbol definitions, such as an ELF file path, URL, buffer, or a raw symbol table.
+ * @param options Configuration options for the instance.
  */
 export function mcuCall(
     link: MCULink,

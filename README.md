@@ -1,32 +1,32 @@
 # MCULink
 
-MCULink 是一个通过 J-Link 实现的，用于上位机与MCU通信的，类型安全的 FFI。
+A type-safe FFI to call MCU code from your computer via J-Link.
 
-文档: https://xeroalpha.github.io/mculink/
+Docs: https://xeroalpha.github.io/mculink/
 
 > [!WARNING]
-> 本项目仍在积极开发中。未来版本中可能出现不向后兼容的变更或移除。
+> This project is under active development. Expect breaking changes.
 
-## 示例
+## Quick Start
 
-通过 NPM 安装 MCULink：
+Install:
 
 ```
 npm i mculink
 ```
 
-编写单片机代码：
+Write your MCU code:
 
 ```c
 int __attribute((used)) get_gpio(int pin)
 {
-    // ......
+    // ...
 }
 
 char __attribute((used)) uart_send_buffer[256];
 void __attribute((used)) uart_send(int len)
 {
-    // ......
+    // ...
 }
 
 void main()
@@ -35,120 +35,98 @@ void main()
 }
 ```
 
-> `__attribute((used))` 用于防止编译器将这段代码错误当成“未被使用的代码”而移除。
+> `__attribute((used))` prevents the compiler from stripping these symbols.
 
-将上述程序烧录到单片机后，用 J-Link 连接单片机和上位机电脑。
+Flash the code to your MCU, then connect it to your PC via J-Link.
 
-编写上位机代码：
+Call the MCU from Node.js:
 
-```javascript
+```typescript
 import { JLink, mcuCall } from 'mculink';
-import { armCall, t } from 'mculink/armv6-m'; // 目前暂时只支持 ARMv6-M
+import { armCall, t } from 'mculink/armv6-m'; // Only ARMv6-M for now
 
-const jlink = new JLink().connect(/* MCU 型号 */);
+const jlink = new JLink().connect(/* MCU model */);
 
-const mcu = mcuCall(jlink, /* 编译结果中 AXF 文件的路径。 */)
+const mcu = mcuCall(jlink, /* path to .axf file */)
     .define({
-        // 声明需要使用的函数与变量，名字需要和单片机代码中的完全一致。
+        // Names must match your MCU code exactly.
         get_gpio: armCall(t.int, t.int),
         uart_send: armCall(t.void, t.int),
         uart_send_buffer: t.arrayOf(t.uint8, 256)
     });
 
-// 调用单片机上的函数 get_gpio。
+// Call get_gpio on the MCU.
 const val = await mcu.get_gpio(pin1);
 
-// 调用单片机上的函数 uart_send。
+// Write to uart_send_buffer, then call uart_send.
 mcu.uart_send_buffer[0] = 0xff;
 mcu.uart_send_buffer[1] = 0x2c;
 mcu.uart_send_buffer[2] = 0x1d;
 await mcu.uart_send(3);
 ```
 
-## 支持类型
+## Types
+
+Full documentation: [MCUTypes](https://xeroalpha.github.io/mculink/classes/mculink_armv6-m.MCUTypes.html)
 
 ```typescript
 import { type ToJs } from 'mculink';
 import { t } from 'mculink/armv6-m';
 
-// 普通类型
-t.void                                 // void    <-> undefined
-t.uint8                                // uint8_t <-> number
-t.int32                                // int32_t <-> number
-t.float                                // float   <-> number
-t.int64                                // int64_t <-> bigint
+// Primitives
+t.void                                 // void    -> undefined
+t.uint8                                // uint8_t -> number
+t.int32                                // int32_t -> number
+t.float                                // float   -> number
+t.int64                                // int64_t -> bigint
 
-// 数组
-t.arrayOf(t.uint8, 256)                // uint8_t [256]    <-> number[]
-t.arrayOf(t.arrayOf(t.int32, 16), 10)  // int32_t [10][16] <-> number[][]
-t.buffer(1024)                         // char [1024]      <-> Buffer
-t.typedArrayOf(Uint16Array, 128)       // uint16_t [128]   <-> Uint16Array
+// Arrays
+t.arrayOf(t.uint8, 256)                // uint8_t [256]    -> number[]
+t.arrayOf(t.arrayOf(t.int32, 16), 10)  // int32_t [10][16] -> number[][]
+t.buffer(1024)                         // char [1024]      -> Buffer
+t.typedArrayOf(Uint16Array, 128)       // uint16_t [128]   -> Uint16Array
 
-// 结构与联合
-t.struct('POSITON', {                  // struct POSITION {   <->  {
-    x: t.uint32,                       //     uint32_t x;              x: number,
-    y: t.uint32,                       //     uint32_t y;              y: number
-})                                     // }                        }
-t.union('VALUE', {                     // union VALUE {       <->  {
-    u32: t.uint32,                     //     uint32_t u32;            u32: number,
-    u8: t.arrayOf(t.uint8, 4)          //     uint8_t u8[4];           u8: number[]
-})                                     // }                        }
+// Structs and unions
+t.struct('POSITION', {                 // struct POSITION {  -> {
+    x: t.uint32,                       //   uint32_t x;            x: number,
+    y: t.uint32,                       //   uint32_t y;            y: number
+})                                     // }                  }
+t.union('VALUE', {                     // union VALUE {      -> {
+    u32: t.uint32,                     //   uint32_t u32;          u32: number,
+    u8: t.arrayOf(t.uint8, 4)          //   uint8_t u8[4];         u8: number[]
+})                                     // }                  }
 
-// 指针与引用
+// Pointers and references
 const Vec = t.struct('Vec', { x: t.float, y: t.float });
-type Vec = ToJs<Vec>;                  // typedef struct { float x; float y; } Vec;
-// 通用指针，可以修改指针指向的地址与内容
-t.pointerOf(Vec)                       // Vec * <-> MCUPointer<MCUTypeDef<Vec, {}>>
-// 输入引用，读取时自动解引用，写入时自动分配内存
-t.ref(t.uint32)                        // Vec * <-> Vec | null | undefined
-// 输出引用，仅用于函数参数
-t.ref.out(t.uint32)                    // Vec * <-> [Vec | undefined]
-// 输入输出引用，仅用于函数参数
-t.ref.inout(t.uint32)                  // Vec * <-> [Vec]
+type Vec = ToJs<Vec>;
+t.pointerOf(Vec)                       // Vec *   -> MCUPointer (read/write address and value)
+t.ref(Vec)                             // Vec *   -> Vec | null (auto-deref on read, auto-alloc on write)
+t.ref.out(Vec)                         // Vec *   -> [Vec | undefined] (output param only)
+t.ref.inout(Vec)                       // Vec *   -> [Vec] (input/output param only)
 
-// 内存区域，对内存的直接访问
-t.spanOf(64)                           // char [64] <-> MCUSpan
-t.spanOf()                             // char *    <-> MCUSpan
+// Raw memory views
+t.spanOf(64)                           // char [64] -> MCUSpan
+t.spanOf()                             // char *    -> MCUSpan
 
-// 枚举与标志
-t.enum('STATE', t.uint8, {             // uint8_t <-> 'STATE_OK' | 'STATE_ERROR'
+// Enums and flags
+t.enum('STATE', t.uint8, {             // uint8_t -> 'STATE_OK' | 'STATE_ERROR'
     STATE_OK: 0,
     STATE_ERROR: 1
 })
-t.flags('STATS', t.uint8, {            // uint8_t <-> {
-    RX_EMPTY: 0x01,                    //                 RX_EMPTY: boolean, 
-    RX_FULL: 0x02,                     //                 RX_FULL: boolean,
-    TX_EMPTY: 0x04,                    //                 TX_EMPTY: boolean,
-    TX_FULL: 0x08                      //                 TX_FULL: boolean
-})                                     //             }
+t.flags('STATS', t.uint8, {            // uint8_t -> { RX_EMPTY: bool, RX_FULL: bool, ... }
+    RX_EMPTY: 0x01,
+    RX_FULL: 0x02,
+    TX_EMPTY: 0x04,
+    TX_FULL: 0x08
+})
 
-// 特殊类型
-t.never                                // 仅用于函数返回值，表示函数不会返回
+// Special
+t.never                                // Function never returns
 ```
 
-## 代理对象
+## Function Calls
 
-MCULink 使用代理对象实现对 MCU 内存的按需实时透明访问。
-
-当访问一个 MCU 变量时，MCULink 并不会立即读取整个结构体或数组，而是创建一个代理对象，在实际访问某个字段时才执行内存读取操作。开发者可以像操作普通 JS 对象一样读写其属性。当修改代理对象的属性时，变更会自动同步到 MCU 的内存中。
-
-代理对象的读写速度较慢。如果需要快速读写，请使用 `mcu.snapshot()` 函数将代理对象转换为普通的 JavaScript 值，并在修改结束后赋值。
-
-```typescript
-const value = mcu.snapshot(mcu.uart_send_buffer);
-for (let i = 0; i < value.length; i++) {
-    value[i] ^= 0xcc;
-}
-mcu.uart_send_buffer = value;
-```
-
-> Buffer 与 TypedArray 不支持代理对象。
-
-## 函数调用
-
-MCULink 实现了 ARM 调用协定，提供了类型安全的远程函数调用能力。
-
-开发者可以在上位机上像调用普通 JavaScript 函数一样调用 MCU 上的 C 函数，而无需关心底层的寄存器操作和内存管理细节。
+MCULink implements the ARM calling convention so you can call MCU functions like normal JS functions.
 
 ```typescript
 import type { InRef, InoutRef, OutRef } from 'mculink';
@@ -169,137 +147,133 @@ armCall<(vec: Vec) => number>(t.float, Vec)
 // float distance_between(Vec *a, Vec *b)
 armCall<(a: InRef<Vec>, b: InRef<Vec>) => number>(t.float, t.ref(Vec), t.ref(Vec))
 
-// void vector_minus(Vec *a, Vec b)  // a 指向的值会在函数调用时改变
+// void vector_minus(Vec *a, Vec b)  // *a is modified by the call
 armCall<(a: InoutRef<Vec>, b: Vec) => number>(t.float, t.ref.inout(Vec), Vec)
 
 // Vec vector_diff(Vec a, Vec b)
 armComplexCall<(a: Vec, b: Vec) => Vec>(Vec, Vec, Vec)
-armCall<(result: OutRef<Vec>, a: Vec, b: Vec) => void>(t.void, t.ref.out(Vec), Vec, Vec)  // 等效写法，但调用方式不同
+armCall<(result: OutRef<Vec>, a: Vec, b: Vec) => void>(t.void, t.ref.out(Vec), Vec, Vec)  // Same thing, different call style
 ```
 
 > [!WARNING]
-> 函数调用目前仍为实验性功能，部分情况下其功能会受到影响：
-> - 当调用函数时，MCULink 会中断当前执行状态。函数返回后，MCULink 会尽可能恢复之前的执行状态。但受限于各种因素，部分执行状态无法恢复。推荐仅在确保 MCU 执行简单命令时（例如死循环）调用函数，否则可能导致不可预知的后果。
-> - MCULink 不支持同一时间执行多个函数。试图进行这一操作可能导致不可预知的后果。
-> - 在执行函数期间触发中断，进入中断处理函数会导致未知的结果。
+> Function calls are experimental:
+> - Calling a function pauses MCU execution. MCULink tries to restore the previous state afterward, but this isn't always perfect. Only call functions when the MCU is in a safe state (e.g. idle loop).
+> - Only one function call at a time.
+> - Interrupts during a call cause undefined behavior.
 
-## 内存操作
+## Memory Operations
 
-### 类型读写
+### Dynamic Views
 
-MCULink 提供一系列工具函数，支持以指定的类型操作内存。
+MCULink reads MCU memory lazily. When you access a variable, it returns a dynamic view backed by a JavaScript Proxy — not a static copy.
+Memory is only read when you access a specific field. Writes sync back to the MCU automatically.
 
 ```typescript
-// uart_send_buffer 的地址
-mcu.addressOf('uart_send_buffer');
-
-// uart_send_buffer 的类型定义
-mcu.typeOf(mcu.symbols.uart_send_buffer)
-
-// 读取位于 0x20000000 的 int[8]，返回一个快照后的对象 number[]
-mcu.read(0x20000000, t.arrayOf(t.int, 8))
-
-// 写入位于 uart_send_buffer 的 uint8_t[8]
-mcu.write(mcu.uart_send_buffer, t.buffer(8), buffer)
-
-// 将名为 span 的 MCUSpan，转换为一个代理对象 Vec
-mcu.cast(span, Vec)
-
-// 将位于 main 的函数代码，转换为对应的 JS 函数
-mcu.bind('main', armCall(t.void))
+mcu.uart_send_buffer[0] = 0xff;
+mcu.uart_send_buffer[0] // 0xff
 ```
 
-### 符号与引用
+Dynamic views are convenient but slow. For bulk operations, take a snapshot, modify it, then write it back:
 
-符号是 MCU 内存中特定位置的标识符，它不仅代表一个地址，还携带完整的类型信息和层次结构信息。通过符号系统，你可以轻松定位复杂数据结构中的任意成员。
+```typescript
+const value = mcu.snapshot(mcu.uart_send_buffer);
+for (let i = 0; i < value.length; i++) {
+    value[i] ^= 0xcc;
+}
+mcu.uart_send_buffer = value;
+```
 
-引用是对 MCU 内存中特定地址的直接操作接口，同时也是一个代理对象。通过引用，你可以直接读取或修改该地址的值。你还可以直接把引用类型赋值给指针类型的变量。
+> Buffer and TypedArray are returned as static copies, not dynamic views.
+
+### Symbols
+
+Symbols are structured representations of named locations in MCU memory that carry complete type and structural information. They allow you to navigate complex nested data structures in a type-safe manner:
 
 ```typescript
 const mcu = mcuCall(/* ... */).define({
     x_ptr: t.pointerOf(t.int),
     cursors: t.arrayOf(
-        t.struct('Vec', {
-            x: t.int,
-            y: t.int
-        }),
+        t.struct('Vec', { x: t.int, y: t.int }),
         16
     )
 });
 
-// x_ptr = &cursors[15].x;
-mcu.x_ptr = mcu.referenceOf(mcu.symbols.cursors[15].x);
+mcu.typeOf(mcu.symbols.cursors[15].x)  // t.int
 ```
 
-符号、引用和代理对象都包含了完整的地址信息。部分需要接收地址的函数也可以接收符号、引用和代理对象。
+Symbols are primarily used for locating memory addresses and navigating complex data structures.
 
-### 内存分配
+### References
 
-MCULink 支持在 MCU 内存（堆）中动态分配一块区域，并返回一个对应类型的引用。
+References are direct manipulation interfaces to specific memory addresses. They provide immediate read/write access and can be assigned to pointer-type variables:
+
+```typescript
+const ref = mcu.referenceOf(mcu.symbols.cursors[15].x);
+ref.value === mcu.cursors[15].x   // true
+
+mcu.x_ptr = ref;                  // x_ptr = &cursors[15].x;
+```
+
+### Utility Functions
+
+These functions accept any value that represents an address: `string` (symbol name), `number` (raw address), dynamic views, `MCUSpan`, `MCUSymbol`, or `MCUReference`.
+
+```typescript
+mcu.addressOf('uart_send_buffer');                    // Get address by symbol name
+mcu.read(0x20000000, t.arrayOf(t.int, 8))             // Read int[8] at a raw address
+mcu.write(mcu.uart_send_buffer, t.buffer(8), buffer)  // Write bytes to a dynamic view
+mcu.cast(span, Vec)                                   // Reinterpret a span as a typed dynamic view
+mcu.bind('main', armCall(t.void))                     // Turn an MCU function into a callable JS function
+```
+
+### Heap Allocation
+
+Allocate memory on the MCU heap:
 
 ```typescript
 const buffer = mcu.new(t.arrayOf(t.uint8, 16));
 buffer.value.fill(0);
-
-// ......
-
+// ...
 buffer.free();
 ```
 
-或者使用 `using` 语法：
+Or with explicit resource management:
 
 ```typescript
 using buffer = mcu.new(...);
 ```
 
-除此以外，部分类型还会在调用函数时自动从栈上分配空间，并在调用结束后自动释放。
+Reference types allocate stack space automatically during function calls.
 
 > [!WARNING]
-> 默认情况下 MCULink 使用 `HEAP_BASE` 与 `HEAP_LIMIT` 符号来识别堆。
-> 确保文件中存在对应的符号，否则会导致找不到堆而分配失败。
->
-> MCULink 不使用 MCU 中的 C 内存分配器（`malloc`），避免将同一块内存同时分配给 C 内存分配器与 MCULink。
+> MCULink uses `HEAP_BASE` and `HEAP_LIMIT` symbols to find the heap. Make sure they exist in your build.
+> MCULink manages its own heap memory separately from `malloc`. Overlapping their memory spaces causes undefined behavior.
 
-### 内存底层操作
+### Memory Spans
 
-MCULink 提供了 MCUSpan 类，可用于表示一段连续的 MCU 内存区域。它提供了安全的边界检查机制，允许开发者以安全的方式直接操作内存。MCUSpan 本身并不存储任何数据，而是作为 MCU 内存区域的代理，通过它可以访问 MCU 内存中的数据。
-
-它支持以下操作：
+`MCUSpan` is a typed view over a region of MCU memory with bounds checking:
 
 ```typescript
 const span = mcu.spanOf(mcu.uart_send_buffer);
 
-// 获取子区域。
-span.slice(0, 128)
-
-// 读写 Buffer
-span.readBuffer()
-span.writeBuffer(buffer)
-
-// 读写内存中指定类型的值
-span.read(t.uint32, 0x04)
-span.write(t.uint8, 0xff, 0)
-span.cast(t.arrayOf(t.uint8, 128), 128)
-
-// 内存数据复制
-span.copyTo(anotherSpan);
+span.slice(0, 128)                  // Sub-region
+span.readBuffer()                   // Read as Buffer
+span.writeBuffer(buffer)            // Write from Buffer
+span.read(t.uint32, 0x04)           // Read a typed value at offset
+span.write(t.uint8, 0xff, 0)        // Write a typed value at offset
+span.cast(t.arrayOf(t.uint8, 128), 128)  // Reinterpret at offset
+span.copyTo(anotherSpan);           // Copy data to another span
 ```
 
-## 待定功能
+## Contributing
 
-- 可变参数：可能不会实现，因为函数工厂的类型定义无法实现该功能。
-- 位域：仅用于兼容
-- 传入动态大小类型的引用参数时，支持自动分配动态大小
+Contributions are welcome:
 
-## 贡献
+- Bug reports and feature requests
+- Code fixes and new features
+- Docs and examples
+- Code reviews and discussions
 
-我们欢迎任何形式的贡献，包括但不限于：
+## License
 
-- 报告 bug 或提出功能建议
-- 提交代码修复或新功能实现
-- 改进文档或示例代码
-- 参与社区讨论和技术评审
-
-## 协议
-
-本项目以 MIT License 开源。详见 [LICENSE](./LICENSE)。
+This project is licensed under the [MIT License](LICENSE) - see the [LICENSE](LICENSE) file for details.

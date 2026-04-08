@@ -27,7 +27,7 @@ import {
 declare module './mcucall.js' {
     interface MCUTypeDef {
         /**
-         * 是否为浮点类型。
+         * Whether this is a floating-point type.
          */
         float?: boolean;
     }

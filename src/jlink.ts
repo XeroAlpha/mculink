@@ -233,7 +233,7 @@ export type JLinkMethods = {
 };
 
 /**
- * J-Link仿真器打开选项。
+ * J-Link emulator open options.
  */
 export interface OpenOptions {
     host?: string;
@@ -242,7 +242,7 @@ export interface OpenOptions {
 }
 
 /**
- * J-Link连接选项。
+ * J-Link connection options.
  */
 export interface ConnectOptions extends OpenOptions {
     targetInterface?: JLinkTargetInterfaces;
@@ -252,7 +252,7 @@ export interface ConnectOptions extends OpenOptions {
 const rwBuffer = Buffer.allocUnsafeSlow(4).fill(0);
 
 /**
- * J-Link独占会话。
+ * J-Link exclusive session.
  */
 export class JLink implements Disposable {
     library: koffi.IKoffiLib;
@@ -273,10 +273,7 @@ export class JLink implements Disposable {
     private deviceInfo: JLinkDeviceInfo | undefined;
 
     /**
-     * 创建一个新的JLink实例。
-     * @param libPath
-     * J-Link库文件的路径，可以是字符串或字符串数组。
-     * 如果未提供，将自动在系统中查找库文件。
+     * @param libPath Path to the J-Link library. Auto-detected if omitted.
      */
     constructor(libPath?: string | string[]) {
         let library: koffi.IKoffiLib | undefined;
@@ -395,15 +392,15 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 获取连接的仿真器数量。
+     * Get the number of connected emulators.
      */
     getEmulatorCount() {
         return this.methods.emuGetNumDevices();
     }
 
     /**
-     * 列出所有可用的仿真器。
-     * @param host 仿真器接口标志，默认为USB。
+     * List all available emulators.
+     * @param host Emulator interface flags. Defaults to USB.
      */
     listEmulators(host: JLinkEmulatorInterfaceFlags = JLinkEmulatorInterfaceFlags.USB) {
         const emulatorCount = this.methods.emuGetList(host, null, 0);
@@ -435,8 +432,8 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 列出所有支持的设备。
-     * @returns 支持的设备信息数组。
+     * List all supported devices.
+     * @returns Supported device information.
      */
     listSupportedDevices() {
         const deviceCount = this.methods.deviceGetInfo(-1, null);
@@ -448,8 +445,8 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 获取指定设备的信息，如果设备不支持则返回undefined。
-     * @param deviceName 设备名称。
+     * Get device info by name. Returns `undefined` if unsupported.
+     * @param deviceName Device name.
      */
     getSupportedDevice(deviceName: string) {
         const index = this.methods.deviceGetIndex(deviceName);
@@ -470,8 +467,8 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 打开与J-Link仿真器的连接。支持链式调用。
-     * @param options 连接选项。
+     * Open a connection to the J-Link emulator. Supports method chaining.
+     * @param options Connection options.
      */
     open(options?: OpenOptions) {
         this.close();
@@ -506,7 +503,7 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 关闭与J-Link仿真器的连接。
+     * Close the connection to the J-Link emulator.
      */
     close() {
         this.methods.close();
@@ -515,8 +512,8 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 执行J-Link命令并返回结果。
-     * @param command 待执行的命令。
+     * Execute a J-Link command.
+     * @param command Command to execute.
      */
     executeCommand(command: string) {
         const errorBuffer: [string] = ['\0'.repeat(512)];
@@ -528,9 +525,9 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 连接至目标设备。支持链式调用。
-     * @param deviceName 设备名称。
-     * @param options 连接选项。
+     * Connect to the target device. Supports method chaining.
+     * @param deviceName Device name.
+     * @param options Connection options.
      */
     connect(deviceName: string, options?: ConnectOptions) {
         if (!this.methods.isOpen()) {
@@ -586,7 +583,7 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 以之前的配置重新连接到目标设备。
+     * Reconnect to the target device using the previous configuration.
      */
     reconnect() {
         if (!this.openOptions || !this.connectOptions || !this.deviceInfo) {
@@ -599,7 +596,7 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 暂停CPU执行。返回是否成功。
+     * Halt CPU execution. Returns whether the operation succeeded.
      */
     halt() {
         const failed = this.methods.halt();
@@ -607,7 +604,7 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 返回CPU是否处于暂停状态。
+     * Check if the CPU is halted.
      */
     isHalted() {
         const result = this.methods.isHalted();
@@ -618,15 +615,15 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 恢复CPU执行。
+     * Resume CPU execution.
      */
     resume() {
         this.methods.go();
     }
 
     /**
-     * 等待CPU进入暂停状态。
-     * @param timeout 等待超时时间（毫秒），默认30000毫秒
+     * Wait for the CPU to halt.
+     * @param timeout Timeout in ms. Defaults to 30000.
      */
     async waitUntilHalt(timeout: number = 30000) {
         const maxTime = Date.now() + timeout;
@@ -639,8 +636,8 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 重置目标设备。
-     * @param delay 重置延迟时间（毫秒），默认为0
+     * Reset the target device.
+     * @param delay Reset delay in ms. Defaults to 0.
      */
     reset(delay: number = 0) {
         this.resetAndHalt(delay);
@@ -648,8 +645,8 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 重置并暂停目标设备。
-     * @param delay 重置延迟时间（毫秒），默认为0
+     * Reset and halt the target device.
+     * @param delay Reset delay in ms. Defaults to 0.
      */
     resetAndHalt(delay: number = 0) {
         this.methods.setResetDelay(delay);
@@ -662,11 +659,11 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 从目标设备的指定内存地址读取数据到指定的缓冲区。
-     * @param address 要读取的内存地址。
-     * @param buffer 用于存储读取数据的缓冲区。
-     * @param access 访问类型，默认为0。
-     * @returns 实际读取的字节数。
+     * Read memory from the target device.
+     * @param address Memory address.
+     * @param buffer Buffer to store the data.
+     * @param access Access type. Defaults to 0.
+     * @returns Bytes read.
      */
     readMemory(address: number, buffer: Buffer, access: number = 0) {
         const unitsRead = this.methods.readMemEx(address, buffer.length, buffer, access);
@@ -677,10 +674,10 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 从目标设备的指定内存地址读取数据到新分配的缓冲区并返回该缓冲区。
-     * @param address 要读取的内存地址。
-     * @param bytes 要读取的最大字节数。
-     * @returns 包含读取数据的缓冲区。
+     * Read memory and return a new buffer.
+     * @param address Memory address.
+     * @param bytes Bytes to read.
+     * @returns Buffer containing the data.
      */
     readMemoryImmediate(address: number, bytes: number) {
         const buffer = Buffer.allocUnsafe(bytes);
@@ -689,8 +686,8 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 从目标设备的指定内存地址读取一个8位无符号整数。
-     * @param address 要读取的内存地址。
+     * Read an 8-bit unsigned integer from memory.
+     * @param address Memory address.
      */
     readMemoryUInt8(address: number) {
         this.readMemory(address, rwBuffer.subarray(0, 1), 1);
@@ -698,8 +695,8 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 从目标设备的指定内存地址读取一个8位有符号整数。
-     * @param address 要读取的内存地址。
+     * Read an 8-bit signed integer from memory.
+     * @param address Memory address.
      */
     readMemoryInt8(address: number) {
         this.readMemory(address, rwBuffer.subarray(0, 1), 1);
@@ -707,8 +704,8 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 从目标设备的指定内存地址读取一个16位无符号整数。
-     * @param address 要读取的内存地址。
+     * Read a 16-bit unsigned integer from memory.
+     * @param address Memory address.
      */
     readMemoryUInt16(address: number) {
         this.readMemory(address, rwBuffer.subarray(0, 2), 2);
@@ -719,8 +716,8 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 从目标设备的指定内存地址读取一个16位有符号整数。
-     * @param address 要读取的内存地址。
+     * Read a 16-bit signed integer from memory.
+     * @param address Memory address.
      */
     readMemoryInt16(address: number) {
         this.readMemory(address, rwBuffer.subarray(0, 2), 2);
@@ -731,8 +728,8 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 从目标设备的指定内存地址读取一个32位无符号整数。
-     * @param address 要读取的内存地址。
+     * Read a 32-bit unsigned integer from memory.
+     * @param address Memory address.
      */
     readMemoryUInt32(address: number) {
         this.readMemory(address, rwBuffer.subarray(0, 4), 4);
@@ -743,8 +740,8 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 从目标设备的指定内存地址读取一个32位有符号整数。
-     * @param address 要读取的内存地址。
+     * Read a 32-bit signed integer from memory.
+     * @param address Memory address.
      */
     readMemoryInt32(address: number) {
         this.readMemory(address, rwBuffer.subarray(0, 4), 4);
@@ -755,8 +752,8 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 从目标设备的指定内存地址读取一个32位浮点数。
-     * @param address 要读取的内存地址。
+     * Read a 32-bit float from memory.
+     * @param address Memory address.
      */
     readMemoryFloat(address: number) {
         this.readMemory(address, rwBuffer.subarray(0, 4), 4);
@@ -767,12 +764,11 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 向目标设备的指定内存地址写入缓冲区中的数据。
-     * @param address 要写入的内存地址
-     * @param buffer 包含要写入数据的缓冲区
-     * @param access 访问类型，默认为0
-     * @returns 实际写入的字节数
-     * @throws 如果写入失败则抛出错误
+     * Write memory from a buffer.
+     * @param address Memory address.
+     * @param buffer Data to write.
+     * @param access Access type. Defaults to 0.
+     * @returns Bytes written.
      */
     writeMemory(address: number, buffer: Buffer, access: number = 0) {
         const unitsWritten = this.methods.writeMemEx(address, buffer.length, buffer, access);
@@ -783,11 +779,11 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 向目标设备的指定内存地址写入数据，在方法内部分配并填充缓冲区。
-     * @param address 要写入的内存地址
-     * @param bytes 要写入的字节数
-     * @param bufferFiller 用于填充缓冲区的函数
-     * @returns 实际写入的字节数
+     * Write memory with an internally allocated buffer.
+     * @param address Memory address.
+     * @param bytes Bytes to write.
+     * @param bufferFiller Function to fill the buffer.
+     * @returns Bytes written.
      */
     writeMemoryImmediate(address: number, bytes: number, bufferFiller: (buf: Buffer) => void) {
         const buffer = Buffer.allocUnsafe(bytes);
@@ -800,9 +796,9 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 向目标设备的指定内存地址写入一个8位无符号整数。
-     * @param address 要写入的内存地址。
-     * @param value 要写入的8位无符号整数值。
+     * Write an 8-bit unsigned integer to memory.
+     * @param address Memory address.
+     * @param value Value to write.
      */
     writeMemoryUInt8(address: number, value: number) {
         rwBuffer.writeUInt8(value);
@@ -810,9 +806,9 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 向目标设备的指定内存地址写入一个8位有符号整数。
-     * @param address 要写入的内存地址。
-     * @param value 要写入的8位有符号整数值。
+     * Write an 8-bit signed integer to memory.
+     * @param address Memory address.
+     * @param value Value to write.
      */
     writeMemoryInt8(address: number, value: number) {
         rwBuffer.writeInt8(value);
@@ -820,9 +816,9 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 向目标设备的指定内存地址写入一个16位无符号整数。
-     * @param address 要写入的内存地址。
-     * @param value 要写入的16位无符号整数值。
+     * Write a 16-bit unsigned integer to memory.
+     * @param address Memory address.
+     * @param value Value to write.
      */
     writeMemoryUInt16(address: number, value: number) {
         if (this.endianness === 'BE') {
@@ -834,9 +830,9 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 向目标设备的指定内存地址写入一个16位有符号整数。
-     * @param address 要写入的内存地址。
-     * @param value 要写入的16位有符号整数值。
+     * Write a 16-bit signed integer to memory.
+     * @param address Memory address.
+     * @param value Value to write.
      */
     writeMemoryInt16(address: number, value: number) {
         if (this.endianness === 'BE') {
@@ -848,9 +844,9 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 向目标设备的指定内存地址写入一个32位无符号整数。
-     * @param address 要写入的内存地址。
-     * @param value 要写入的32位无符号整数值。
+     * Write a 32-bit unsigned integer to memory.
+     * @param address Memory address.
+     * @param value Value to write.
      */
     writeMemoryUInt32(address: number, value: number) {
         if (this.endianness === 'BE') {
@@ -862,9 +858,9 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 向目标设备的指定内存地址写入一个32位有符号整数。
-     * @param address 要写入的内存地址。
-     * @param value 要写入的32位有符号整数值。
+     * Write a 32-bit signed integer to memory.
+     * @param address Memory address.
+     * @param value Value to write.
      */
     writeMemoryInt32(address: number, value: number) {
         if (this.endianness === 'BE') {
@@ -876,9 +872,9 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 向目标设备的指定内存地址写入一个32位浮点数。
-     * @param address 要写入的内存地址。
-     * @param value 要写入的32位浮点数值。
+     * Write a 32-bit float to memory.
+     * @param address Memory address.
+     * @param value Value to write.
      */
     writeMemoryFloat(address: number, value: number) {
         if (this.endianness === 'BE') {
@@ -890,15 +886,15 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 获取目标设备上所有可用寄存器的名称列表。
+     * Get all available register names.
      */
     getRegisters(): string[] {
         return Object.keys(this.registerNameLookup);
     }
 
     /**
-     * 读取指定寄存器的值，以无符号32位整数形式返回。如果CPU正在运行或寄存器名称无效则抛出错误。
-     * @param registerName 要读取的寄存器名称。
+     * Read a register value as 32-bit unsigned integer. Throws if CPU is running or register is invalid.
+     * @param registerName Register name.
      */
     readRegister(registerName: string) {
         if (!this.isHalted()) {
@@ -912,9 +908,9 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 读取一组指定寄存器的值，以无符号32位整数形式返回。
-     * @param registers 要读取的寄存器名称数组。
-     * @returns 包含寄存器名称和对应值的映射对象。
+     * Read multiple register values as 32-bit unsigned integer.
+     * @param registers Register names.
+     * @returns Map of register names to values.
      */
     readRegisters<K extends string>(registers: K[]) {
         const result = {} as { [k in K]: number };
@@ -925,25 +921,25 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 读取指定寄存器的值，以有符号32位整数形式返回。
-     * @param registerName 要读取的寄存器名称。
+     * Read a register value as 32-bit signed integer.
+     * @param registerName Register name.
      */
     readRegisterInt32(registerName: string) {
         return uint32ToSigned(this.readRegister(registerName));
     }
 
     /**
-     * 读取指定寄存器的值，以单精度浮点数形式返回。
-     * @param registerName 要读取的寄存器名称
+     * Read a register value as 32-bit float.
+     * @param registerName Register name.
      */
     readRegisterFloat(registerName: string) {
         return uint32ToFloat(this.readRegister(registerName));
     }
 
     /**
-     * 批量读取一组指定寄存器的值。如果CPU正在运行或任一寄存器名称无效则抛出错误。
-     * @param registers 要读取的寄存器名称数组。
-     * @returns 包含寄存器名称和对应值的映射对象。
+     * Batch read register values. Throws if CPU is running or any register is invalid.
+     * @param registers Register names.
+     * @returns Map of register names to values.
      */
     readRegisterBatch<K extends string>(registers: K[]) {
         if (!this.isHalted()) {
@@ -971,9 +967,9 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 向指定寄存器写入一个无符号32位整数值。如果CPU正在运行或寄存器名称无效则抛出错误。
-     * @param registerName 要写入的寄存器名称。
-     * @param value 要写入的值。
+     * Write a 32-bit unsigned integer value to a register. Throws if CPU is running or register is invalid.
+     * @param registerName Register name.
+     * @param value Value to write.
      */
     writeRegister(registerName: string, value: number) {
         if (!this.isHalted()) {
@@ -990,8 +986,8 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 向多个寄存器写入指定的无符号32位整数值。
-     * @param registers 包含寄存器名称和对应值的映射对象。
+     * Write 32-bit unsigned integer values to multiple registers.
+     * @param registers Map of register names to values.
      */
     writeRegisters(registers: Record<string, number>) {
         for (const [name, value] of Object.entries(registers)) {
@@ -1000,26 +996,26 @@ export class JLink implements Disposable {
     }
 
     /**
-     * 向指定寄存器写入一个有符号32位整数值。
-     * @param registerName 要写入的寄存器名称。
-     * @param value 要写入的有符号整数值。
+     * Write an 32-bit signed integer value to a register.
+     * @param registerName Register name.
+     * @param value Value to write.
      */
     writeRegisterInt32(registerName: string, value: number) {
         this.writeRegister(registerName, int32ToUnsigned(value));
     }
 
     /**
-     * 向指定寄存器写入一个单精度浮点数值。
-     * @param registerName 要写入的寄存器名称。
-     * @param value 要写入的浮点数值。
+     * Write a 32-bit float value to a register.
+     * @param registerName Register name.
+     * @param value Value to write.
      */
     writeRegisterFloat(registerName: string, value: number) {
         this.writeRegister(registerName, floatToUInt32(value));
     }
 
     /**
-     * 批量向一组寄存器写入值。如果CPU正在运行或任一寄存器名称无效则抛出错误。
-     * @param registers 包含寄存器名称和对应值的映射对象。
+     * Batch write register values. Throws if CPU is running or any register is invalid.
+     * @param registers Map of register names to values.
      */
     writeRegisterBatch(registers: Record<string, number>) {
         if (!this.isHalted()) {
