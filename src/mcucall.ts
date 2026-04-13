@@ -189,7 +189,7 @@ export type MCUSymbolDef<T extends MCUTypeDef = MCUTypeDef> = {
  */
 export type SymbolDefintions = Partial<Record<string | number, MCUSymbolDef>>;
 
-export type MCUTypeDefAccessors<T, N extends SymbolDefintions = EmptyKeyObject> = Partial<
+export type MCUTypeDefAccessors<T, N extends SymbolDefintions> = Partial<
     Omit<MCUTypeDef<T, N>, typeof typeTag | 'name' | 'size'>
 > &
     (
@@ -408,7 +408,7 @@ function defaultLazilyAccessorHandler<T>(ctx: MCUContext, address: number, type:
  */
 export function createLazilyAccessor<T>(
     handler: (ctx: MCUContext, address: number, type: MCUTypeDef<T>) => T = defaultLazilyAccessorHandler,
-): MCUTypeDef<T>['lazilyAccess'] {
+): (ctx: MCUContext, addr: number) => LazilyAccessObjectOrValue<T> {
     const cache = new WeakMap<
         MCUContext,
         {
@@ -416,6 +416,7 @@ export function createLazilyAccessor<T>(
             finalizationRegistry: FinalizationRegistry<number>;
         }
     >();
+    // must strip this type
     return function (this: MCUTypeDef<T>, ctx: MCUContext, address: number) {
         let cachedMap = cache.get(ctx);
         if (!cachedMap) {
@@ -1480,7 +1481,7 @@ let infiniteSpanType: MCUTypeDef<MCUSpan> | undefined;
  * Construct a memory region type.
  * @param size Region size. Omit for infinite size.
  */
-export function makeSpan(size?: number) {
+export function makeSpan(size?: number): MCUTypeDef<MCUSpan> {
     if (size !== undefined) {
         const type = mcuType(`Span[${size}]`, size, {
             fromMemory: (ctx, addr): MCUSpan => {
@@ -1699,6 +1700,16 @@ export function makeFunctionType<F extends MCUFunctionDef>(name: string, def: F)
     });
     return markAsIncompleteType(type);
 }
+
+/**
+ * Converts a function definition to a type definition.
+ */
+export type ToFunctionType<F extends MCUFunctionDef> = MCUTypeDef<ToJsFunction<F>>;
+
+/**
+ * Coerces a type to a `MCUTypeDef`.
+ */
+export type AsTypeDef<T> = T extends MCUTypeDef ? T : T extends MCUFunctionDef ? ToFunctionType<T> : never;
 
 /**
  * Heap allocation handle. Requires manual `free()` or `using` syntax.
@@ -2073,6 +2084,39 @@ export function createReference<T extends MCUTypeDef, B = object>(
     return ref;
 }
 
+function mcuDefine(
+    ctx: MCUContext,
+    view: MCUCall,
+    name: string,
+    address: number,
+    typeOrBinder: MCUTypeDef | MCUFunctionDef,
+) {
+    if (typeof typeOrBinder === 'function') {
+        const functionType = makeFunctionType(name, typeOrBinder);
+        Object.defineProperty(view, name, {
+            configurable: true,
+            enumerable: true,
+            value: markAsLazilyAccessObject(typeOrBinder(ctx, address, name), functionType, address),
+        });
+        Object.defineProperty(view.symbols, name, {
+            configurable: true,
+            enumerable: true,
+            value: createSymbol(ctx, address, functionType),
+        });
+    } else {
+        Object.defineProperty(view, name, {
+            configurable: true,
+            enumerable: true,
+            ...createVariable(ctx, address, typeOrBinder),
+        });
+        Object.defineProperty(view.symbols, name, {
+            configurable: true,
+            enumerable: true,
+            value: createSymbol(ctx, address, typeOrBinder),
+        });
+    }
+}
+
 /**
  * Represents a symbolic or numeric address.
  *
@@ -2104,27 +2148,46 @@ export type TypedValue<T extends MCUTypeDef> = MCUSymbol<T> | MCUReference<T>;
  */
 export type TypedAddressable<T extends MCUTypeDef> = MCUSymbol<T> | MCUReference<T>;
 
-export type AppendDefinition<Definitions extends Record<string, unknown>> = {
+export type AppendDefinition<Definitions extends Record<string, MCUTypeDef | MCUFunctionDef>> = {
     [name: string]: MCUTypeDef | MCUFunctionDef;
 } & { [K in keyof MCUCall<Definitions>]?: never };
 
 /**
  * MCU call instance.
  */
-export type MCUCall<
-    Definitions extends Record<string, unknown> = EmptyKeyObject,
-    Symbols extends Record<string, unknown> = EmptyKeyObject,
-> = {
+export type MCUCall<Definitions extends Record<string, MCUTypeDef | MCUFunctionDef> = EmptyKeyObject> = {
     /**
      * Define a variable or function.
      *
      * Searches the symbol table for the address, then exposes the symbol on the instance.
+     * Throws if a symbol is not found or already defined.
      *
      * @param def Symbol name and type pairs.
      */
-    define<T extends AppendDefinition<Definitions>>(
-        def: T,
-    ): MCUCall<Definitions & { [k in keyof T]: ToJs<T[k]> }, Symbols & { [k in keyof T]: ToSymbol<T[k]> }>;
+    define<T extends AppendDefinition<Definitions>>(def: T): MCUCall<Definitions & { [k in keyof T]: T[k] }>;
+
+    /**
+     * Define a variable or function, making it optional.
+     *
+     * Searches the symbol table for the address, then exposes the symbol on the instance.
+     * Unlike `define()`, missing symbols are silently skipped instead of throwing an error.
+     * Already defined symbols will still throw an error.
+     *
+     * @param def Symbol name and type pairs.
+     */
+    defineOptional<T extends AppendDefinition<Definitions>>(def: T): MCUCall<Definitions & { [k in keyof T]?: T[k] }>;
+
+    /**
+     * Try to define a variable or function.
+     *
+     * Searches the symbol table for the address, then exposes the symbol on the instance.
+     * Returns `true` if all symbols are successfully defined, `false` otherwise.
+     * Unlike `define()`, this method returns a boolean instead of throwing on conflicts or missing symbols.
+     *
+     * @param def Symbol name and type pairs.
+     * @returns `true` if all symbols were defined; `false` if a symbol was not found or already defined.
+     */
+    tryDefine<T extends AppendDefinition<Definitions>>(def: T): this is MCUCall<Definitions & { [k in keyof T]: T[k] }>;
 
     /**
      * Resolve a memory address.
@@ -2270,14 +2333,19 @@ export type MCUCall<
     /**
      * Symbol table.
      */
-    symbols: Symbols;
+    symbols: { [k in keyof Definitions]: ToSymbol<Definitions[k]> };
+
+    /**
+     * Alias for `symbols`.
+     */
+    $: { [k in keyof Definitions]: ToSymbol<Definitions[k]> };
 
     /**
      * List of symbol names.
      */
     symbolNames: string[];
 } & {
-    [v in keyof Definitions]: Definitions[v];
+    [v in keyof Definitions]: ToJs<Definitions[v]>;
 };
 
 export interface MCUCallOptions {
@@ -2393,6 +2461,7 @@ export function mcuCall(
         }
         throw new Error(`Symbol ${symbolOrAddress} not found`);
     };
+    const symbols = {};
     const resultProto: MCUCall = {
         define<T extends AppendDefinition<EmptyKeyObject>>(def: T) {
             for (const [name, typeOrBinder] of Object.entries(def)) {
@@ -2403,32 +2472,43 @@ export function mcuCall(
                     throw new Error(`${name} is already defined in MCUCall.`);
                 }
                 const address = resolveAddress(name, symbolAddresses);
-                if (typeof typeOrBinder === 'function') {
-                    const functionType = makeFunctionType(name, typeOrBinder);
-                    Object.defineProperty(this, name, {
-                        configurable: true,
-                        enumerable: true,
-                        value: markAsLazilyAccessObject(typeOrBinder(ctx, address, name), functionType, address),
-                    });
-                    Object.defineProperty(this.symbols, name, {
-                        configurable: true,
-                        enumerable: true,
-                        value: createSymbol(ctx, address, functionType),
-                    });
-                } else {
-                    Object.defineProperty(this, name, {
-                        configurable: true,
-                        enumerable: true,
-                        ...createVariable(ctx, address, typeOrBinder),
-                    });
-                    Object.defineProperty(this.symbols, name, {
-                        configurable: true,
-                        enumerable: true,
-                        value: createSymbol(ctx, address, typeOrBinder),
-                    });
+                mcuDefine(ctx, this, name, address, typeOrBinder);
+            }
+            return this as MCUCall<T>;
+        },
+        defineOptional<T extends AppendDefinition<EmptyKeyObject>>(def: T) {
+            for (const [name, typeOrBinder] of Object.entries(def)) {
+                if (typeOrBinder === undefined) {
+                    continue;
+                }
+                if (name in this) {
+                    throw new Error(`${name} is already defined in MCUCall.`);
+                }
+                try {
+                    const address = resolveAddress(name, symbolAddresses);
+                    mcuDefine(ctx, this, name, address, typeOrBinder);
+                } catch (_err) {
+                    // symbol not found, skip
                 }
             }
-            return this as MCUCall<{ [k in keyof T]: ToJs<T[k]> }, { [k in keyof T]: ToSymbol<T[k]> }>;
+            return this as MCUCall<T>;
+        },
+        tryDefine<T extends AppendDefinition<EmptyKeyObject>>(def: T): this is MCUCall<T> {
+            for (const [name, typeOrBinder] of Object.entries(def)) {
+                if (typeOrBinder === undefined) {
+                    continue;
+                }
+                if (name in this) {
+                    return false;
+                }
+                try {
+                    const address = resolveAddress(name, symbolAddresses);
+                    mcuDefine(ctx, this, name, address, typeOrBinder);
+                } catch (_err) {
+                    return false;
+                }
+            }
+            return true;
         },
         addressOf,
         typeOf(symbol) {
@@ -2505,7 +2585,8 @@ export function mcuCall(
             return addressToString(symbolAddresses, address, searchUpperBound, searchLowerBound);
         },
         context: ctx,
-        symbols: {},
+        symbols,
+        $: symbols,
         symbolNames: Object.keys(symbolAddresses),
     };
     return Object.create(resultProto);
