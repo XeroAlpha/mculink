@@ -730,6 +730,76 @@ export function makeTypedArray<T extends { buffer: ArrayBuffer; byteLength: numb
 }
 
 /**
+ * Construct a string buffer type.
+ * @param maxLength Maximum string length, excluding the null terminator.
+ * @param encoding String encoding. Defaults to 'latin1' for single-byte character support. Use 'utf16le' for wide characters.
+ * @param chunkSize Chunk size for hardware reads. Must be a multiple of the character width. Defaults to 256 bytes.
+ */
+export function makeStringBuffer(maxLength: number, encoding: BufferEncoding = 'latin1', chunkSize: number = 256) {
+    const chunkedRead = function* (ctx: MCUContext, addr: number) {
+        const startChunkAddr = alignedCeil(addr, chunkSize);
+        const endAddr = addr + maxLength;
+        if (startChunkAddr !== addr) {
+            const unalignedFirstChunk = Buffer.alloc(startChunkAddr - addr);
+            ctx.link.readMemory(addr, unalignedFirstChunk);
+            yield unalignedFirstChunk;
+        }
+        for (let p = startChunkAddr; p < endAddr; p += chunkSize) {
+            const chunkBuffer = Buffer.alloc(Math.min(chunkSize, endAddr - p));
+            ctx.link.readMemory(addr, chunkBuffer);
+            yield chunkBuffer;
+        }
+    };
+    const width = Buffer.from('\0', encoding).length;
+    if (width === 0) {
+        throw new Error(`Encoding ${encoding} does not support null-terminated strings.`);
+    }
+    if (chunkSize % width !== 0) {
+        throw new Error(`Chunk size ${chunkSize} is not a multiple of character width ${width}.`);
+    }
+    const size = maxLength * width;
+    return mcuType(width === 2 ? `_string_ wchar[${maxLength}]` : `_string_ char[${size}]`, size, {
+        align: width,
+        fromMemory(ctx, addr, buffer, offset) {
+            let stringBuffer: Buffer;
+            if (buffer !== undefined && offset !== undefined) {
+                const clipped = buffer.subarray(offset, offset + size)
+                const end = clipped.indexOf('\0', 0, encoding);
+                if (end >= 0) {
+                    stringBuffer = clipped.subarray(0, end);
+                } else {
+                    stringBuffer = clipped;
+                }
+            } else {
+                const chunks: Buffer[] = [];
+                for (const chunk of chunkedRead(ctx, addr)) {
+                    const end = chunk.indexOf('\0', 0, encoding);
+                    if (end >= 0) {
+                        chunks.push(chunk.subarray(0, end));
+                        break;
+                    } else {
+                        chunks.push(chunk);
+                    }
+                }
+                stringBuffer = Buffer.concat(chunks);
+            }
+            return stringBuffer.toString(encoding);
+        },
+        toMemory(ctx, addr, value, buffer, offset) {
+            const stringBuffer = Buffer.from(value, encoding);
+            if (stringBuffer.length > maxLength) {
+                throw new Error(`String is too long (${stringBuffer.length} > ${maxLength})`);
+            }
+            if (buffer !== undefined && offset !== undefined) {
+                buffer.set(stringBuffer, offset);
+            } else {
+                ctx.link.writeMemory(addr, stringBuffer);
+            }
+        },
+    });
+}
+
+/**
  * Construct an enum type.
  * @param name Enum type name.
  * @param baseType Base type.
@@ -2471,7 +2541,7 @@ export function mcuCall(
                 if (name in this) {
                     throw new Error(`${name} is already defined in MCUCall.`);
                 }
-                const address = resolveAddress(name, symbolAddresses);
+                const address = symbolAddresses[name];
                 mcuDefine(ctx, this, name, address, typeOrBinder);
             }
             return this as MCUCall<T>;
@@ -2485,7 +2555,7 @@ export function mcuCall(
                     throw new Error(`${name} is already defined in MCUCall.`);
                 }
                 try {
-                    const address = resolveAddress(name, symbolAddresses);
+                    const address = symbolAddresses[name];
                     mcuDefine(ctx, this, name, address, typeOrBinder);
                 } catch (_err) {
                     // symbol not found, skip
@@ -2502,7 +2572,7 @@ export function mcuCall(
                     return false;
                 }
                 try {
-                    const address = resolveAddress(name, symbolAddresses);
+                    const address = symbolAddresses[name];
                     mcuDefine(ctx, this, name, address, typeOrBinder);
                 } catch (_err) {
                     return false;

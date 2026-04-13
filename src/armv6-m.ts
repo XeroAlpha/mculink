@@ -15,6 +15,7 @@ import {
     makePointerType,
     makeReferenceType,
     makeSpan,
+    makeStringBuffer,
     makeStructure,
     makeTypedArray,
     makeUnion,
@@ -86,6 +87,7 @@ export class MCUTypes {
     });
     arrayOf = makeArray;
     buffer = makeBuffer;
+    string = makeStringBuffer;
     typedArrayOf = makeTypedArray;
     pointerOf = makePointerType(this.uint32);
     ref = makeReferenceType(this.uint32);
