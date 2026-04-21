@@ -1,5 +1,5 @@
 /**
  * @module mculink
  */
-export * from './jlink.js';
-export * from './mcucall.js';
+export * from './core/index.js';
+export * from './jlink/index.js';

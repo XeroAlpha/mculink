@@ -11,8 +11,8 @@
             "types": "./dist/index.d.ts"
         },
         "./armv6-m": {
-            "import": "./dist/armv6-m.js",
-            "types": "./dist/armv6-m.d.ts"
+            "import": "./dist/arch/armv6-m.js",
+            "types": "./dist/arch/armv6-m.d.ts"
         }
     },
     "files": [

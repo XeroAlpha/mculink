@@ -1,7 +1,6 @@
 /**
  * @module mculink/armv6-m
  */
-import { alignedCeil, alignedFloor } from './binparse.js';
 import {
     addressToString,
     makeArray,
@@ -23,9 +22,10 @@ import {
     narrowType,
     neverType,
     voidType,
-} from './mcucall.js';
+} from '../index.js';
+import { alignedCeil, alignedFloor } from '../util/align.js';
 
-declare module './mcucall.js' {
+declare module '../index.js' {
     interface MCUTypeDef {
         /**
          * Whether this is a floating-point type.
@@ -137,7 +137,7 @@ export const armCall = makeCallConvention((ctx, address, _name, returnType, ...a
     const resultRegisterCount = Math.min(resultRegisters.length, Math.ceil(returnType.size / registerSize));
     const usedResultRegisters = resultRegisters.slice(0, resultRegisterCount);
     return (...args) => {
-        const savedRegisters = link.readRegisters([...volatileRegisters]);
+        const savedRegisters = link.register.readMany([...volatileRegisters]);
         const writingRegisters = {
             R13: savedRegisters.R13, // SP
             R14: savedRegisters.R14, // LR
@@ -148,7 +148,7 @@ export const armCall = makeCallConvention((ctx, address, _name, returnType, ...a
         } else {
             writingRegisters.R13 -= InStackBreakpoint.length;
             writingRegisters.R14 = writingRegisters.R13 + 1; // Thumb
-            link.writeMemory(writingRegisters.R13, InStackBreakpoint);
+            link.memory.write(writingRegisters.R13, InStackBreakpoint);
         }
         const release = ctx.allocator.stackAccess(ctx, (size, align) => {
             if (size === undefined || size === 0) {
@@ -171,26 +171,26 @@ export const armCall = makeCallConvention((ctx, address, _name, returnType, ...a
         }
         if (stackMemorySize > 0) {
             writingRegisters.R13 = alignedFloor(writingRegisters.R13 - stackMemorySize, stackAlign);
-            link.writeMemory(writingRegisters.R13, stackBuffer.subarray(stackMemoryOffset));
+            link.memory.write(writingRegisters.R13, stackBuffer.subarray(stackMemoryOffset));
         }
-        link.writeRegisters(writingRegisters);
+        link.register.writeMany(writingRegisters);
         return (error?: Error | null) => {
             if (error) {
-                const PC = addressToString(ctx.symbolAddresses, link.readRegister('R15'));
-                const LR = addressToString(ctx.symbolAddresses, link.readRegister('R14'));
+                const PC = addressToString(ctx.symbolAddresses, link.register.read('R15'));
+                const LR = addressToString(ctx.symbolAddresses, link.register.read('R14'));
                 const FUNC = addressToString(ctx.symbolAddresses, writingRegisters.R15);
                 const BKPT = addressToString(ctx.symbolAddresses, writingRegisters.R14);
                 const nativeRegisters = { PC, LR, FUNC, BKPT };
                 Object.assign(error, { nativeRegisters });
                 throw error;
             }
-            const outArgs = usedResultRegisters.map((reg) => link.readRegister(reg));
+            const outArgs = usedResultRegisters.map((reg) => link.register.read(reg));
             const outArgBuffer = Buffer.allocUnsafe(outArgs.length * registerSize);
             for (let i = 0; i < outArgs.length; i++) {
                 outArgBuffer.writeUInt32LE(outArgs[i], registerSize * i);
             }
             finalizer.finalize();
-            link.writeRegisters(savedRegisters);
+            link.register.writeMany(savedRegisters);
             return returnType.fromRegister(ctx, outArgBuffer, 0);
         };
     };

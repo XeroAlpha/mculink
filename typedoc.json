@@ -2,5 +2,15 @@
     "$schema": "https://typedoc.org/schema.json",
     "out": "doc",
     "highlightLanguages": ["typescript", "json", "javascript", "c", "console"],
-    "name": "MCULink"
+    "name": "MCULink",
+    "intentionallyNotExported": [
+        "mculink/src/core/type/struct.ts:StructDefToTypeMap",
+        "mculink/src/core/types.ts:MCUTypeDef",
+        "mculink/src/core/types.ts:typeTag",
+        "mculink/src/core/types.ts:ToAsyncFunction",
+        "mculink/src/core/types.ts:signatureTag",
+        "mculink/src/core/types.ts:WrapParametersToType",
+        "mculink/src/core/types.ts:InferParametersFromType",
+        "mculink/src/core/types.ts:AppendDefinition"
+    ]
 }
