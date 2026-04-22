@@ -7,11 +7,11 @@ export function makeVariantType(size: number) {
         deserialize: () => {
             throw new Error(`Cannot read variant type because the concrete type is unknown at runtime.`);
         },
-        serialize: (buffer, offset, value, ctx, addr) => {
+        serialize: (buffer, value, ctx, addr) => {
             if (value[0].size > size) {
                 throw new Error(`Variant type size overflow: expected at most ${size}, got ${value[0].size}.`);
             }
-            return serialize(ctx, value[0], value[1], buffer, offset, addr);
+            return serialize(ctx, value[0], value[1], buffer, addr);
         },
     });
 }

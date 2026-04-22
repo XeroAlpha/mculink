@@ -11,17 +11,16 @@ export function makeTypedArray<T extends { buffer: ArrayBuffer; byteLength: numb
 ) {
     const byteLength = length * (ctor.BYTES_PER_ELEMENT ?? 1);
     return mcuType(`_${ctor.name}_(${length})`, byteLength, {
-        deserialize: (buffer, offset) => {
+        deserialize: (buffer) => {
             const newBuffer = new ArrayBuffer(byteLength);
-            buffer.copy(new Uint8Array(newBuffer), 0, offset);
+            buffer.copy(new Uint8Array(newBuffer));
             return new ctor(newBuffer);
         },
-        serialize: (buffer, offset, value) => {
-            buffer.set(new Uint8Array(value.buffer, value.byteOffset, value.byteLength), offset);
+        serialize: (buffer, value) => {
+            buffer.set(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
             if (value.byteLength < byteLength) {
-                buffer.fill(0, offset + value.byteLength, offset + byteLength);
+                buffer.fill(0, value.byteLength, byteLength);
             }
-            return offset + byteLength;
         },
     });
 }

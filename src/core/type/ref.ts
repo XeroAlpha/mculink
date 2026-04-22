@@ -15,36 +15,36 @@ export function makeInReference<T extends MCUTypeDef>(pointerType: MCUTypeDef<nu
     const name = `${type.name}*`;
     return mcuType<InRef<ToJsType<T>>>(name, pointerType.size, {
         align: pointerType.align,
-        deserialize: (buffer, offset, ctx) => {
-            const address = pointerType.fromRegister(ctx, buffer, offset);
+        deserialize: (buffer, ctx) => {
+            const address = pointerType.fromRegister(ctx, buffer);
             if (address === 0) {
                 return null;
             }
             // prevent circular reference
             return type.lazilyAccess(ctx, address);
         },
-        toMemory: (ctx, addr, value, buffer, offset) => {
+        toMemory: (ctx, addr, value, buffer) => {
             if (value === undefined || value === null) {
-                return pointerType.toMemory(ctx, addr, 0, buffer, offset);
+                pointerType.toMemory(ctx, addr, 0, buffer);
             }
             if (typeof value === 'object' && isLazilyAccessProxy(value)) {
-                return pointerType.toMemory(ctx, addr, value[MemoryAddress], buffer, offset);
+                pointerType.toMemory(ctx, addr, value[MemoryAddress], buffer);
             }
             throw new Error(`Ambiguous operation. Use pointer type instead.`);
         },
-        toRegister: (ctx, value, buffer, offset) => {
+        toRegister: (ctx, value, buffer) => {
             if (value === undefined || value === null) {
-                return pointerType.toRegister(ctx, 0, buffer, offset);
+                pointerType.toRegister(ctx, 0, buffer);
             }
             if (isLazilyAccessProxy(value)) {
-                return pointerType.toRegister(ctx, value[MemoryAddress], buffer, offset);
+                pointerType.toRegister(ctx, value[MemoryAddress], buffer);
             }
             const alloc = ctx.allocator.allocateAuto(ctx, type.size, type.align);
             if (!alloc) {
                 throw new Error(`Cannot allocate ${type.size} byte(s) from stack.`);
             }
             type.toMemory(ctx, alloc.address, value);
-            return pointerType.toRegister(ctx, alloc.address, buffer, offset);
+            pointerType.toRegister(ctx, alloc.address, buffer);
         },
     });
 }
@@ -69,9 +69,10 @@ export function makeOutReference<T extends MCUTypeDef>(pointerType: MCUTypeDef<n
         toMemory: () => {
             throw new Error(`Cannot change the value of reference type ${name}.`);
         },
-        toRegister: (ctx, value, buffer, offset) => {
+        toRegister: (ctx, value, buffer) => {
             if (isLazilyAccessProxy(value[0])) {
-                return pointerType.toRegister(ctx, value[0][MemoryAddress], buffer, offset);
+                pointerType.toRegister(ctx, value[0][MemoryAddress], buffer);
+                return;
             }
             const alloc = ctx.allocator.allocateAuto(ctx, type.size, type.align);
             if (!alloc) {
@@ -80,7 +81,7 @@ export function makeOutReference<T extends MCUTypeDef>(pointerType: MCUTypeDef<n
             alloc.finalize = () => {
                 value[0] = type.fromMemory(ctx, alloc.address);
             };
-            return pointerType.toRegister(ctx, alloc.address, buffer, offset);
+            pointerType.toRegister(ctx, alloc.address, buffer);
         },
     });
 }
@@ -105,9 +106,10 @@ export function makeInoutReference<T extends MCUTypeDef>(pointerType: MCUTypeDef
         toMemory: () => {
             throw new Error(`Cannot change the value of reference type ${name}.`);
         },
-        toRegister: (ctx, value, buffer, offset) => {
+        toRegister: (ctx, value, buffer) => {
             if (isLazilyAccessProxy(value[0])) {
-                return pointerType.toRegister(ctx, value[0][MemoryAddress], buffer, offset);
+                pointerType.toRegister(ctx, value[0][MemoryAddress], buffer);
+                return;
             }
             const alloc = ctx.allocator.allocateAuto(ctx, type.size, type.align);
             if (!alloc) {
@@ -117,7 +119,7 @@ export function makeInoutReference<T extends MCUTypeDef>(pointerType: MCUTypeDef
             alloc.finalize = () => {
                 value[0] = type.fromMemory(ctx, alloc.address);
             };
-            return pointerType.toRegister(ctx, alloc.address, buffer, offset);
+            pointerType.toRegister(ctx, alloc.address, buffer);
         },
     });
 }

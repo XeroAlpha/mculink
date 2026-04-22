@@ -38,52 +38,52 @@ export class MCUTypes {
     void = voidType;
     never = neverType;
     uint8 = mcuType('uint8_t', 1, {
-        deserialize: (buffer, offset) => buffer.readUInt8(offset),
-        serialize: (buffer, offset, value) => buffer.writeUInt8(value, offset),
+        deserialize: (buffer) => buffer.readUInt8(),
+        serialize: (buffer, value) => buffer.writeUInt8(value),
     });
     uint16 = mcuType('uint16_t', 2, {
-        deserialize: (buffer, offset) => buffer.readUInt16LE(offset),
-        serialize: (buffer, offset, value) => buffer.writeUInt16LE(value, offset),
+        deserialize: (buffer) => buffer.readUInt16LE(),
+        serialize: (buffer, value) => buffer.writeUInt16LE(value),
     });
     uint32 = mcuType('uint32_t', 4, {
-        deserialize: (buffer, offset) => buffer.readUInt32LE(offset),
-        serialize: (buffer, offset, value) => buffer.writeUInt32LE(value >>> 0, offset),
+        deserialize: (buffer) => buffer.readUInt32LE(),
+        serialize: (buffer, value) => buffer.writeUInt32LE(value >>> 0),
     });
     uint64 = mcuType('uint64_t', 8, {
-        deserialize: (buffer, offset) => buffer.readBigUInt64LE(offset),
-        serialize: (buffer, offset, value) => buffer.writeBigUInt64LE(value, offset),
+        deserialize: (buffer) => buffer.readBigUInt64LE(),
+        serialize: (buffer, value) => buffer.writeBigUInt64LE(value),
     });
     uint = this.uint32;
     int8 = mcuType('int8_t', 1, {
-        deserialize: (buffer, offset) => buffer.readInt8(offset),
-        serialize: (buffer, offset, value) => buffer.writeInt8(value, offset),
+        deserialize: (buffer) => buffer.readInt8(),
+        serialize: (buffer, value) => buffer.writeInt8(value),
     });
     int16 = mcuType('int16_t', 2, {
-        deserialize: (buffer, offset) => buffer.readInt16LE(offset),
-        serialize: (buffer, offset, value) => buffer.writeInt16LE(value, offset),
+        deserialize: (buffer) => buffer.readInt16LE(),
+        serialize: (buffer, value) => buffer.writeInt16LE(value),
     });
     int32 = mcuType('int32_t', 4, {
-        deserialize: (buffer, offset) => buffer.readInt32LE(offset),
-        serialize: (buffer, offset, value) => buffer.writeInt32LE(value, offset),
+        deserialize: (buffer) => buffer.readInt32LE(),
+        serialize: (buffer, value) => buffer.writeInt32LE(value),
     });
     int64 = mcuType('int64_t', 8, {
-        deserialize: (buffer, offset) => buffer.readBigInt64LE(offset),
-        serialize: (buffer, offset, value) => buffer.writeBigInt64LE(value, offset),
+        deserialize: (buffer) => buffer.readBigInt64LE(),
+        serialize: (buffer, value) => buffer.writeBigInt64LE(value),
     });
     int = this.int32;
     float = mcuType('float_t', 4, {
         float: true,
-        deserialize: (buffer, offset) => buffer.readFloatLE(offset),
-        serialize: (buffer, offset, value) => buffer.writeFloatLE(value, offset),
+        deserialize: (buffer) => buffer.readFloatLE(),
+        serialize: (buffer, value) => buffer.writeFloatLE(value),
     });
     double = mcuType('double_t', 8, {
         float: true,
-        deserialize: (buffer, offset) => buffer.readDoubleLE(offset),
-        serialize: (buffer, offset, value) => buffer.writeDoubleLE(value, offset),
+        deserialize: (buffer) => buffer.readDoubleLE(),
+        serialize: (buffer, value) => buffer.writeDoubleLE(value),
     });
     bool = mcuType('bool', 4, {
-        deserialize: (buffer, offset) => buffer.readInt32LE(offset) !== 0,
-        serialize: (buffer, offset, value) => buffer.writeInt32LE(value ? 1 : 0, offset),
+        deserialize: (buffer) => buffer.readInt32LE() !== 0,
+        serialize: (buffer, value) => buffer.writeInt32LE(value ? 1 : 0),
     });
     arrayOf = makeArray;
     buffer = makeBuffer;
@@ -163,7 +163,11 @@ export const armCall = makeCallConvention((ctx, address, _name, returnType, ...a
         });
         const stackBuffer = Buffer.alloc(stackSize);
         for (let i = 0; i < argumentTypes.length; i++) {
-            argumentTypes[i].toRegister(ctx, args[i], stackBuffer, stackOffsets[i]);
+            argumentTypes[i].toRegister(
+                ctx,
+                args[i],
+                stackBuffer.subarray(stackOffsets[i], stackOffsets[i] + argumentTypes[i].size),
+            );
         }
         const finalizer = release();
         for (let i = 0; i < stackRegisterCount; i++) {
@@ -191,7 +195,7 @@ export const armCall = makeCallConvention((ctx, address, _name, returnType, ...a
             }
             finalizer.finalize();
             link.register.writeMany(savedRegisters);
-            return returnType.fromRegister(ctx, outArgBuffer, 0);
+            return returnType.fromRegister(ctx, outArgBuffer);
         };
     };
 });

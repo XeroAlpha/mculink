@@ -118,9 +118,8 @@ export interface MCUTypeDef<T = unknown, N extends SymbolDefintions = EmptyKeyOb
      * @param ctx Call context.
      * @param addr Memory address.
      * @param buffer Optional prefetched buffer. Reads from here if available to avoid redundant hardware reads.
-     * @param offset Position within the buffer to start reading from.
      */
-    fromMemory(ctx: MCUContext, addr: number, buffer?: Buffer, offset?: number): T;
+    fromMemory(ctx: MCUContext, addr: number, buffer?: Buffer): T;
 
     /**
      * Write a value to memory.
@@ -130,10 +129,8 @@ export interface MCUTypeDef<T = unknown, N extends SymbolDefintions = EmptyKeyOb
      * @param addr Memory address.
      * @param value Value to write.
      * @param buffer Optional staging buffer. If provided, data is written here for later sync.
-     * @param offset Position within the buffer to start writing.
-     * @returns Offset + size written if buffered; otherwise `undefined`.
      */
-    toMemory(ctx: MCUContext, addr: number, value: T, buffer?: Buffer, offset?: number): number | undefined;
+    toMemory(ctx: MCUContext, addr: number, value: T, buffer?: Buffer): void;
 
     /**
      * Returns a lazy-access dynamic view. Data is read from/written to memory only when properties are accessed.
@@ -148,20 +145,50 @@ export interface MCUTypeDef<T = unknown, N extends SymbolDefintions = EmptyKeyOb
      * Convert raw register data into a value. Typically used to retrieve function return values.
      * @param ctx Call context.
      * @param buffer Read buffer.
-     * @param offset Position within the buffer to start reading from.
      */
-    fromRegister(ctx: MCUContext, buffer: Buffer, offset: number): T;
+    fromRegister(ctx: MCUContext, buffer: Buffer): T;
 
     /**
      * Convert a value into raw register data. Typically used to pass function arguments.
      * @param ctx Call context.
      * @param value Value to write.
      * @param buffer Write buffer.
-     * @param offset Position within the buffer to start writing.
-     * @returns Offset + size written.
      */
-    toRegister(ctx: MCUContext, value: T, buffer: Buffer, offset: number): number;
+    toRegister(ctx: MCUContext, value: T, buffer: Buffer): void;
 }
+
+export type MCUTypeDefAccessors<T, N extends SymbolDefintions> = Partial<
+    Omit<MCUTypeDef<T, N>, typeof typeTag | 'name' | 'size'>
+> &
+    (
+        | Pick<MCUTypeDef<T, N>, 'fromMemory'>
+        | {
+              fromMemory?: undefined;
+
+              /**
+               * Read a value from a buffer. Reads memory if no prefetched buffer is available.
+               * @param buffer Buffer to read from.
+               * @param ctx Call context.
+               * @param addr Memory address. Not provided when the source is a register.
+               */
+              deserialize(buffer: Buffer, ctx: MCUContext, addr?: number): T;
+          }
+    ) &
+    (
+        | Pick<MCUTypeDef<T, N>, 'toMemory'>
+        | {
+              toMemory?: undefined;
+
+              /**
+               * Write a value to a buffer. Writes to memory if no staging buffer is available.
+               * @param buffer Buffer to write to.
+               * @param value Value to write.
+               * @param ctx Call context.
+               * @param addr Memory address. Not provided when the target is a register.
+               */
+              serialize(buffer: Buffer, value: T, ctx: MCUContext, addr?: number): void;
+          }
+    );
 
 /**
  * JavaScript representation of a type definition.

@@ -5,7 +5,7 @@ import { mcuType } from '../core.js';
  */
 export const voidType = mcuType<void>('void_t', 0, {
     fromMemory: () => undefined,
-    toMemory: (_ctx, _addr, _value, buffer, offset) => (buffer ? offset : undefined),
+    toMemory: () => {},
     fromRegister: () => undefined,
 });
 

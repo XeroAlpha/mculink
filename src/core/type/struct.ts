@@ -19,7 +19,7 @@ export function makeStructure<T extends Record<string, MCUTypeDef | [type: MCUTy
 ) {
     type StructDef = StructDefToTypeMap<T>;
     let size = 0;
-    const entryMap = new Map<string, { type: MCUTypeDef; offset: number }>();
+    const entryMap = new Map<string, { type: MCUTypeDef; offset: number; nextOffset: number }>();
     const objectTemplate = {} as {
         [K in keyof T]: ToJsType<StructDef[K]>;
     };
@@ -34,41 +34,38 @@ export function makeStructure<T extends Record<string, MCUTypeDef | [type: MCUTy
         const itemAlign = align ?? type.align;
         maxAlign = Math.max(maxAlign, itemAlign);
         offset = alignedCeil(offset, itemAlign);
-        entryMap.set(key, { type, offset });
+        nextOffset = offset + type.size;
+        entryMap.set(key, { type, offset, nextOffset });
         (objectTemplate as Record<string, unknown>)[key] = undefined;
         (symbols as SymbolDefintions)[key] = { type, address: offset };
-        nextOffset = offset + type.size;
         size = Math.max(size, nextOffset);
     }
     size = alignedCeil(size, maxAlign);
     const structType = mcuType(name, size, {
         align: maxAlign,
         symbols,
-        deserialize: (buffer, offset, ctx, addr) => {
+        deserialize: (buffer, ctx, addr) => {
             const obj = { ...objectTemplate };
-            for (const [key, { type, offset: entOffset }] of entryMap.entries()) {
+            for (const [key, { type, offset, nextOffset }] of entryMap.entries()) {
                 (obj as Record<string, unknown>)[key] = deserialize(
                     ctx,
                     type,
-                    buffer,
-                    offset + entOffset,
+                    buffer.subarray(offset, nextOffset),
                     addr !== undefined ? addr + offset : undefined,
                 );
             }
             return obj;
         },
-        serialize: (buffer, offset, value, ctx, addr) => {
-            for (const [key, { type, offset: entOffset }] of entryMap.entries()) {
+        serialize: (buffer, value, ctx, addr) => {
+            for (const [key, { type, offset, nextOffset }] of entryMap.entries()) {
                 serialize(
                     ctx,
                     type,
                     value[key],
-                    buffer,
-                    offset + entOffset,
-                    addr !== undefined ? addr + entOffset : undefined,
+                    buffer.subarray(offset, nextOffset),
+                    addr !== undefined ? addr + offset : undefined,
                 );
             }
-            return offset + size;
         },
         lazilyAccess: createLazilyProxyAccesser({
             baseObjectFactory() {

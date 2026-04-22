@@ -28,18 +28,17 @@ export function makeUnion<T extends Record<string, MCUTypeDef>>(name: string, un
     const unionType = mcuType(name, maxSize, {
         align: maxAlign,
         symbols,
-        deserialize: (buffer, offset, ctx, addr) => {
+        deserialize: (buffer, ctx, addr) => {
             const obj = { ...objectTemplate };
             for (const [key, def] of entries) {
-                (obj as Record<string, unknown>)[key] = deserialize(ctx, def, buffer, offset, addr);
+                (obj as Record<string, unknown>)[key] = deserialize(ctx, def, buffer.subarray(0, def.size), addr);
             }
             return obj;
         },
-        serialize: (buffer, offset, value, ctx, addr) => {
+        serialize: (buffer, value, ctx, addr) => {
             for (const [key, def] of entries) {
-                serialize(ctx, def, value[key], buffer, offset, addr);
+                serialize(ctx, def, value[key], buffer.subarray(0, def.size), addr);
             }
-            return offset + maxSize;
         },
         lazilyAccess: createLazilyProxyAccesser({
             baseObjectFactory() {

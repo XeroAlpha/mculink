@@ -22,31 +22,30 @@ export function makeArray<T extends MCUTypeDef>(type: T, length: number) {
     const arrayType = mcuType(name, size, {
         align: itemSize,
         symbols,
-        deserialize: (buffer, offset, ctx, addr) => {
+        deserialize: (buffer, ctx, addr) => {
             const value = new Array<ToJsType<T>>(length);
             for (let i = 0; i < length; i++) {
+                const offset = itemSize * i;
                 value[i] = deserialize(
                     ctx,
                     type,
-                    buffer,
-                    offset + itemSize * i,
-                    addr !== undefined ? addr + itemSize * i : undefined,
+                    buffer.subarray(offset, offset + itemSize),
+                    addr !== undefined ? addr + offset : undefined,
                 );
             }
             return value;
         },
-        serialize: (buffer, offset, value, ctx, addr) => {
+        serialize: (buffer, value, ctx, addr) => {
             for (let i = 0; i < length; i++) {
+                const offset = itemSize * i;
                 serialize(
                     ctx,
                     type,
                     value[i],
-                    buffer,
-                    offset + itemSize * i,
-                    addr !== undefined ? addr + itemSize * i : undefined,
+                    buffer.subarray(offset, offset + itemSize),
+                    addr !== undefined ? addr + offset : undefined,
                 );
             }
-            return offset + size;
         },
         lazilyAccess: createLazilyProxyAccesser({
             baseObjectFactory() {

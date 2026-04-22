@@ -19,20 +19,20 @@ export function makeEnum<B extends MCUTypeDef, T extends { [key: string]: ToJsTy
     return mcuType(name, baseType.size, {
         align: baseType.align,
         symbols: baseType.symbols as B['symbols'],
-        deserialize: (buffer, offset, ctx, addr) => {
-            const baseValue = deserialize(ctx, baseType, buffer, offset, addr);
+        deserialize: (buffer, ctx, addr) => {
+            const baseValue = deserialize(ctx, baseType, buffer, addr);
             const value = enumDefLookup.get(baseValue);
             if (value === undefined) {
                 throw new Error(`Value ${baseValue} cannot converted to enum ${name}`);
             }
             return value;
         },
-        serialize: (buffer, offset, value, ctx, addr) => {
+        serialize: (buffer, value, ctx, addr) => {
             if (!Object.hasOwn(enumDef, value)) {
                 throw new Error(`${String(value)} is not a valid key for enum ${name}`);
             }
             const baseValue = enumDef[value];
-            return serialize(ctx, baseType, baseValue, buffer, offset, addr);
+            serialize(ctx, baseType, baseValue, buffer, addr);
         },
     });
 }

@@ -6,17 +6,16 @@ import { mcuType } from '../core.js';
  */
 export function makeBuffer(size: number) {
     return mcuType(`_Buffer_(${size})`, size, {
-        deserialize: (buffer, offset) => {
+        deserialize: (buffer) => {
             const newBuffer = Buffer.allocUnsafe(size);
-            buffer.copy(newBuffer, 0, offset);
+            buffer.copy(newBuffer);
             return newBuffer;
         },
-        serialize: (buffer, offset, value) => {
-            value.copy(buffer, offset);
+        serialize: (buffer, value) => {
+            value.copy(buffer);
             if (value.length < size) {
-                buffer.fill(0, offset + value.length, offset + size);
+                buffer.fill(0, value.length, size);
             }
-            return offset + size;
         },
     });
 }

@@ -5,48 +5,12 @@ import type {
     LazilyAccessObjectOrValue,
     MCUContext,
     MCUTypeDef,
+    MCUTypeDefAccessors,
     SymbolDefintions,
-    typeTag,
 } from './types.js';
 
 export const NativeType = Symbol('nativeType');
 export const MemoryAddress = Symbol('memoryAddress');
-
-export type MCUTypeDefAccessors<T, N extends SymbolDefintions> = Partial<
-    Omit<MCUTypeDef<T, N>, typeof typeTag | 'name' | 'size'>
-> &
-    (
-        | Pick<MCUTypeDef<T, N>, 'fromMemory'>
-        | {
-              fromMemory?: undefined;
-
-              /**
-               * Read a value from a buffer. Reads memory if no prefetched buffer is available.
-               * @param buffer Buffer to read from.
-               * @param offset Position within the buffer to start reading from.
-               * @param ctx Call context.
-               * @param addr Memory address. Not provided when the source is a register.
-               */
-              deserialize(buffer: Buffer, offset: number, ctx: MCUContext, addr?: number): T;
-          }
-    ) &
-    (
-        | Pick<MCUTypeDef<T, N>, 'toMemory'>
-        | {
-              toMemory?: undefined;
-
-              /**
-               * Write a value to a buffer. Writes to memory if no staging buffer is available.
-               * @param buffer Buffer to write to.
-               * @param offset Position within the buffer to start writing.
-               * @param value Value to write.
-               * @param ctx Call context.
-               * @param addr Memory address. Not provided when the target is a register.
-               * @returns Offset + size written.
-               */
-              serialize(buffer: Buffer, offset: number, value: T, ctx: MCUContext, addr?: number): number;
-          }
-    );
 
 /**
  * Define a type. Fills in optional parameters.
@@ -58,38 +22,38 @@ export function mcuType<T, N extends SymbolDefintions = EmptyKeyObject>(
 ) {
     const type = { name, size, ...accessors } as MCUTypeDef<T, N>;
     if (!accessors.fromMemory) {
-        type.fromMemory = (ctx, addr, buffer, offset) => {
+        type.fromMemory = (ctx, addr, buffer) => {
             if (buffer) {
-                return accessors.deserialize(buffer, offset!, ctx, addr);
+                return accessors.deserialize(buffer, ctx, addr);
             } else {
                 const readBuffer = Buffer.allocUnsafe(type.size);
                 if (readBuffer.length > 0) {
                     ctx.link.memory.read(addr, readBuffer);
                 }
-                return accessors.deserialize(readBuffer, 0, ctx, addr);
+                return accessors.deserialize(readBuffer, ctx, addr);
             }
         };
         if (!accessors.fromRegister) {
-            type.fromRegister = (ctx, buffer, offset) => {
-                return accessors.deserialize(buffer, offset!, ctx);
+            type.fromRegister = (ctx, buffer) => {
+                return accessors.deserialize(buffer, ctx);
             };
         }
     }
     if (!accessors.toMemory) {
-        type.toMemory = (ctx, addr, value, buffer, offset) => {
+        type.toMemory = (ctx, addr, value, buffer) => {
             if (buffer) {
-                return accessors.serialize(buffer, offset!, value, ctx, addr);
+                accessors.serialize(buffer, value, ctx, addr);
             } else {
                 const writeBuffer = Buffer.allocUnsafe(type.size);
-                accessors.serialize(writeBuffer, 0, value, ctx, addr);
+                accessors.serialize(writeBuffer, value, ctx, addr);
                 if (writeBuffer.length > 0) {
                     ctx.link.memory.write(addr, writeBuffer);
                 }
             }
         };
         if (!accessors.toRegister) {
-            type.toRegister = (ctx, value, buffer, offset) => {
-                return accessors.serialize(buffer, offset!, value, ctx);
+            type.toRegister = (ctx, value, buffer) => {
+                accessors.serialize(buffer, value, ctx);
             };
         }
     }
@@ -126,21 +90,14 @@ export function mcuType<T, N extends SymbolDefintions = EmptyKeyObject>(
  * @param ctx MCU call context.
  * @param type MCU type definition.
  * @param buffer Optional buffer.
- * @param offset Offset within the buffer.
  * @param addr Optional memory address.
  * @returns Deserialized value.
  */
-export function deserialize<T>(
-    ctx: MCUContext,
-    type: MCUTypeDef<T>,
-    buffer: Buffer | undefined,
-    offset: number | undefined,
-    addr?: number,
-): T {
+export function deserialize<T>(ctx: MCUContext, type: MCUTypeDef<T>, buffer: Buffer | undefined, addr?: number): T {
     if (addr !== undefined) {
-        return type.fromMemory(ctx, addr, buffer, offset);
-    } else if (buffer !== undefined && offset !== undefined) {
-        return type.fromRegister(ctx, buffer, offset);
+        return type.fromMemory(ctx, addr, buffer);
+    } else if (buffer !== undefined) {
+        return type.fromRegister(ctx, buffer);
     }
     throw new Error(`Cannot deserialize since either address nor buffer is provided.`);
 }
@@ -151,22 +108,19 @@ export function deserialize<T>(
  * @param type MCU type definition.
  * @param value Value to serialize.
  * @param buffer Optional buffer.
- * @param offset Offset within the buffer.
  * @param addr Optional memory address.
- * @returns Offset + size written if buffered; otherwise `0`.
  */
 export function serialize<T>(
     ctx: MCUContext,
     type: MCUTypeDef<T>,
     value: T,
     buffer: Buffer | undefined,
-    offset: number | undefined,
     addr?: number,
-): number {
+) {
     if (addr !== undefined) {
-        return type.toMemory(ctx, addr, value, buffer, offset) ?? 0;
-    } else if (buffer !== undefined && offset !== undefined) {
-        return type.toRegister(ctx, value, buffer, offset);
+        type.toMemory(ctx, addr, value, buffer);
+    } else if (buffer !== undefined) {
+        type.toRegister(ctx, value, buffer);
     }
     throw new Error(`Cannot serialize since either address nor buffer is provided.`);
 }

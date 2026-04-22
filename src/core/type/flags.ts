@@ -19,22 +19,22 @@ export function makeFlags<B extends MCUTypeDef<number>, T extends { [key: string
     return mcuType(name, baseType.size, {
         align: baseType.align,
         symbols: baseType.symbols as B['symbols'],
-        deserialize: (buffer, offset, ctx, addr) => {
-            const baseValue = deserialize(ctx, baseType, buffer, offset, addr);
+        deserialize: (buffer, ctx, addr) => {
+            const baseValue = deserialize(ctx, baseType, buffer, addr);
             const value = { ...zeroFlagValue };
             for (const [key, flag] of flagDefEntries) {
                 value[key] = (baseValue & flag) === flag;
             }
             return value;
         },
-        serialize: (buffer, offset, value, ctx, addr) => {
+        serialize: (buffer, value, ctx, addr) => {
             let baseValue = 0;
             for (const [key, flag] of flagDefEntries) {
                 if (value[key]) {
                     baseValue |= flag;
                 }
             }
-            return serialize(ctx, baseType, baseValue, buffer, offset, addr);
+            return serialize(ctx, baseType, baseValue, buffer, addr);
         },
         lazilyAccess: createLazilyProxyAccesser({
             baseObjectFactory() {

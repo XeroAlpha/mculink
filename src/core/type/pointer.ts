@@ -20,8 +20,8 @@ export function makePointer<T extends MCUTypeDef>(pointerType: MCUTypeDef<number
     const name = `_Pointer_ ${type.name}*`;
     return mcuType<MCUPointer<T>>(name, pointerType.size, {
         align: pointerType.align,
-        deserialize: (buffer, offset, ctx, addr) => {
-            const address = deserialize(ctx, pointerType, buffer, offset, addr);
+        deserialize: (buffer, ctx, addr) => {
+            const address = deserialize(ctx, pointerType, buffer, addr);
             const ptr = {
                 address,
                 symbol: createSymbol(ctx, address, type),
@@ -35,8 +35,8 @@ export function makePointer<T extends MCUTypeDef>(pointerType: MCUTypeDef<number
             });
             return ptr;
         },
-        serialize: (buffer, offset, value, ctx, addr) => {
-            return serialize(ctx, pointerType, value.address, buffer, offset, addr);
+        serialize: (buffer, value, ctx, addr) => {
+            serialize(ctx, pointerType, value.address, buffer, addr);
         },
         lazilyAccess: createLazilyAccessor((ctx, addr) => {
             const getAddress = () => pointerType.fromMemory(ctx, addr);
